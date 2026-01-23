@@ -1,6 +1,7 @@
 using SessionApp.Models;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,6 +21,9 @@ namespace SessionApp.Services
         // Events for real-time notifications (subscribers may forward to SignalR)
         public event Action<RoomSession>? SessionExpired;
         public event Action<RoomSession, Participant>? ParticipantJoined;
+
+        // New event: invoked when a game is successfully started and groups are created
+        public event Action<RoomSession, IReadOnlyList<IReadOnlyList<Participant>>>? GameStarted;
 
         public RoomCodeService()
         {
@@ -63,6 +67,10 @@ namespace SessionApp.Services
             if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
                 return false;
 
+            // Do not allow joining after a game has started
+            if (session.IsGameStarted)
+                return false;
+
             var participant = new Participant
             {
                 Id = participantId,
@@ -88,7 +96,7 @@ namespace SessionApp.Services
                 return null;
 
             return session;
-            }
+        }
 
         public bool InvalidateSession(string code)
         {
@@ -117,6 +125,59 @@ namespace SessionApp.Services
                         SessionExpired?.Invoke(removed);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Starts a game for the given room code. Participants are randomized and partitioned into groups of up to 4.
+        /// The last group may contain fewer than 4 participants if the total is not divisible by 4.
+        /// Returns the groups on success; returns null if session not found, expired, already started, or has no participants.
+        /// </summary>
+        public IReadOnlyList<IReadOnlyList<Participant>>? StartGame(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                return null;
+
+            var key = code.ToUpperInvariant();
+            if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
+                return null;
+
+            lock (session)
+            {
+                if (session.IsGameStarted)
+                    return null;
+
+                var participants = session.Participants.Values.ToList();
+                if (participants.Count == 0)
+                    return null;
+
+                // Shuffle using cryptographic RNG (Fisher-Yates)
+                Shuffle(participants);
+
+                var groups = new List<IReadOnlyList<Participant>>();
+                for (int i = 0; i < participants.Count; i += 4)
+                {
+                    var group = participants.Skip(i).Take(4).ToArray();
+                    groups.Add(Array.AsReadOnly(group));
+                }
+
+                session.Groups = Array.AsReadOnly(groups.ToArray());
+                session.IsGameStarted = true;
+
+                // Notify subscribers (SignalR hub can forward to clients)
+                GameStarted?.Invoke(session, session.Groups);
+
+                return session.Groups;
+            }
+        }
+
+        private void Shuffle<T>(IList<T> list)
+        {
+            // Fisher-Yates using RandomNumberGenerator.GetInt32 (uniform)
+            for (int i = list.Count - 1; i > 0; i--)
+            {
+                int j = RandomNumberGenerator.GetInt32(i + 1);
+                (list[i], list[j]) = (list[j], list[i]);
             }
         }
 
