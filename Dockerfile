@@ -24,4 +24,4 @@ ENTRYPOINT ["dotnet", "SessionApp.dll"]
 # dir
 # docker build -t sessionapp:latest .
 # Example: Dockerfile lives in a subfolder
-docker build -f ./src/MyApp/Dockerfile -t sessionapp:latest .
+docker build -f ./src/SessionApp/Dockerfile -t sessionapp:latest .
