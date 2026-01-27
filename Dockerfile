@@ -18,3 +18,10 @@ EXPOSE 80
 
 # Update the DLL name if your project assembly differs.
 ENTRYPOINT ["dotnet", "SessionApp.dll"]
+
+# Build the Docker image
+# cd "C:\Users\tmollenhauer\source\repos\SessionApp"
+# dir
+# docker build -t sessionapp:latest .
+# Example: Dockerfile lives in a subfolder
+docker build -f ./src/MyApp/Dockerfile -t sessionapp:latest .
