@@ -21,6 +21,13 @@ namespace SessionApp.Controllers
             _hubContext = hubContext;
         }
 
+        // Simple test endpoint to verify the service is running
+        [HttpGet("test")]
+        public IActionResult Test()
+        {
+            return Ok(new { message = "Service is working", utcNow = DateTime.UtcNow });
+        }
+
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateRoomRequest request)
         {
