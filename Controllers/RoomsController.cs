@@ -28,6 +28,7 @@ namespace SessionApp.Controllers
             return Ok(new { message = "Service is working", utcNow = DateTime.UtcNow });
         }
 
+        // Raw /api/Rooms { "hostId": "host1" }
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateRoomRequest request)
         {
@@ -43,7 +44,7 @@ namespace SessionApp.Controllers
         public async Task<IActionResult> Join(string code, [FromBody] JoinRoomRequest request)
         {
             var ok = _roomService.TryJoin(code, request.ParticipantId, request.ParticipantName);
-            if (!ok) return NotFound(new { message = "Room not found or expired" });
+            if (!ok) return NotFound(new { message = "Room not found or expired or user exists" });//change how errors work
 
             // Broadcast participant joined to clients in the room group
             await _hubContext.Clients.Group(code.ToUpperInvariant())
@@ -57,7 +58,12 @@ namespace SessionApp.Controllers
         {
             var session = _roomService.GetSession(code);
             if (session is null) return NotFound();
-            return Ok(new GetRoomResponse(session.Code, session.HostId, session.CreatedAtUtc, session.ExpiresAtUtc, session.Participants.Count));
+
+            var participants = session.Participants.Values
+                .Select(p => new RoomParticipant(p.Id, p.Name, p.JoinedAtUtc))
+                .ToArray();
+
+            return Ok(new GetRoomResponse(session.Code, session.HostId, session.CreatedAtUtc, session.ExpiresAtUtc, session.Participants.Count, participants));
         }
 
         // New GET endpoint that starts the game for a room and notifies connected clients.
@@ -86,7 +92,7 @@ namespace SessionApp.Controllers
         // GET api/rooms/{code}/group/{participantId}
         // Returns which group the specified participant is in after the game has started.
         [HttpGet("{code}/group/{participantId}")]
-        public IActionResult GetParticipantGroup(string code, string participantId)
+        public IActionResult GetParticipantGroup(string code, string participantId )
         {
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(participantId))
                 return BadRequest(new { message = "code and participantId are required" });
@@ -125,5 +131,10 @@ namespace SessionApp.Controllers
     public record CreateRoomRequest(string HostId, int CodeLength = 6, TimeSpan? Ttl = null);
     public record CreateRoomResponse(string Code, DateTime ExpiresAtUtc);
     public record JoinRoomRequest(string ParticipantId, string ParticipantName);
-    public record GetRoomResponse(string Code, string HostId, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, int ParticipantCount);
+
+    // DTO used by GetRoomResponse to expose participant details
+    public record RoomParticipant(string Id, string Name, DateTime JoinedAtUtc);
+
+    // Updated GetRoomResponse now includes the participants array
+    public record GetRoomResponse(string Code, string HostId, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, int ParticipantCount, RoomParticipant[] Participants);
 }

@@ -58,17 +58,20 @@ namespace SessionApp.Services
             throw new InvalidOperationException("Unable to generate a unique room code. Try increasing code length.");
         }
 
-        public bool TryJoin(string code, string participantId, string participantName)
+        public bool TryJoin(string code, string participantId, string participantName = "")
         {
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(participantId))
                 return false;
+
+            if (participantName == string.Empty)
+                participantName = participantId;
 
             var key = code.ToUpperInvariant();
             if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
                 return false;
 
             // Do not allow joining after a game has started
-            if (session.IsGameStarted)
+            if (session.IsGameStarted) // maybe change this
                 return false;
 
             var participant = new Participant
@@ -77,6 +80,9 @@ namespace SessionApp.Services
                 Name = participantName,
                 JoinedAtUtc = DateTime.UtcNow
             };
+
+            if (session.Participants.ContainsKey(participantId))
+                return false;
 
             session.Participants.AddOrUpdate(participantId, participant, (_, __) => participant);
 

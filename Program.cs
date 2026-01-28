@@ -7,6 +7,19 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// CORS: allow cross-origin requests (adjust origins as needed)
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy
+            .AllowAnyOrigin()    // Use .WithOrigins("https://example.com") for a restricted list
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+
 // register room/session service (in-memory singleton)
 builder.Services.AddSingleton<RoomCodeService>();
 
@@ -56,6 +69,10 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// Enable CORS globally using the named policy.
+// This will add Access-Control-Allow-Origin and related headers for cross-origin requests.
+app.UseCors("AllowAll");
 
 app.UseAuthorization();
 
