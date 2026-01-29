@@ -233,7 +233,7 @@ namespace SessionApp.Services
             }
         }
 
-        private IReadOnlyList<Group> SnapshotGroups(IReadOnlyList<Group> groups)
+        public IReadOnlyList<Group> SnapshotGroups(IReadOnlyList<Group> groups)
         {
             var snapshot = new List<Group>(groups.Count);
             foreach (var g in groups)

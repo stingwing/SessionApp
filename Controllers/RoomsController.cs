@@ -276,6 +276,71 @@ namespace SessionApp.Controllers
             };
         }
 
+        // POST api/rooms/{code}/end
+        // Host calls this to end the current session: archives the current groups (current round),
+        // marks the session ended and broadcasts a SessionEnded event with per-group results.
+        [HttpPost("{code}/end")]
+        public async Task<IActionResult> EndSession(string code, [FromBody] EndSessionRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(code) || request is null)
+                return BadRequest(new { message = "code and request body are required" });
+
+            if (string.IsNullOrWhiteSpace(request.HostId))
+                return BadRequest(new { message = "HostId is required to end session" });
+
+            var session = _roomService.GetSession(code);
+            if (session is null)
+                return NotFound(new { message = "Room not found or expired" });
+
+            // Only host may end the session
+            if (!string.Equals(session.HostId, request.HostId, StringComparison.Ordinal))
+                return Forbid();
+
+            lock (session)
+            {
+                if (!session.IsGameStarted || session.Groups is null)
+                    return BadRequest(new { message = "Game has not been started for this room" });
+
+                var snapshot = _roomService.SnapshotGroups(session.Groups);
+                session.ArchivedRounds.Add(System.Array.AsReadOnly(snapshot.ToArray()));
+
+                // Mark session ended
+                session.IsGameEnded = true;
+            }
+
+            // Prepare result payload to broadcast/return
+            var resultGroups = session.Groups.Select(g => new
+            {
+                GroupNumber = g.GroupNumber,
+                Round = g.RoundNumber,
+                Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                Result = g.HasResult,
+                Winner = g.WinnerParticipantId,
+                Draw = g.IsDraw
+            }).ToArray();
+
+            var payload = new
+            {
+                RoomCode = session.Code,
+                Round = session.CurrentRound,
+                Groups = resultGroups,
+                ArchivedRoundsCount = session.ArchivedRounds.Count
+            };
+
+            // Broadcast final session results
+            await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("SessionEnded", payload);
+
+            // Optionally remove session from memory if requested
+            if (request.Invalidate)
+            {
+                _roomService.InvalidateSession(code);
+                // also broadcast that room was removed
+                await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("RoomInvalidated", new { RoomCode = code.ToUpperInvariant() });
+            }
+
+            return Ok(payload);
+        }
+
         private RoomSession? _room_service_snapshot(string code) => _roomService.GetSession(code);
 
         private async Task<IActionResult> HandleGroupEndedBroadcast(string code, string result, string? winnerId, int? groupIndex)
@@ -334,4 +399,7 @@ namespace SessionApp.Controllers
 
     // Request DTO for updating room settings.
     public record UpdateRoomSettingsRequest(string HostId, int MaxGroupSize = 4, bool AllowJoinAfterStart = false, bool AllowSpectators = true);
+
+    // Request DTO to end a session. HostId required for authorization.
+    public record EndSessionRequest(string HostId, bool Invalidate = false);
 }
