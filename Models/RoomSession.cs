@@ -11,6 +11,10 @@ namespace SessionApp.Models
         public DateTime CreatedAtUtc { get; init; }
         public DateTime ExpiresAtUtc { get; set; }
 
+        // New: session-level settings that can be changed at runtime.
+        // These settings are intentionally mutable and simple; validation is performed by the controller.
+        public RoomSettings Settings { get; set; } = new RoomSettings();
+
         // Participants keyed by participant id
         public ConcurrentDictionary<string, Participant> Participants { get; } = new();
 
@@ -36,6 +40,33 @@ namespace SessionApp.Models
         public List<IReadOnlyList<Group>> ArchivedRounds { get; } = new();
 
         public bool IsExpiredUtc() => DateTime.UtcNow >= ExpiresAtUtc;
+    }
+
+    /// <summary>
+    /// Mutable per-room settings that clients/host can change.
+    /// Keep small and explicit so changes are easy to reason about.
+    /// </summary>
+    public class RoomSettings
+    {
+        //To Do add settings
+        //Allow users to join after game has started
+        //
+        ///// </summary>
+        public bool AllowJoinAfterStart { get; set; } = true;
+
+
+        /// <summary>
+        /// Maximum group size used when partitioning participants. Supported values: 3 or 4.
+        /// Default is 4.
+        /// </summary>
+        //public int MaxGroupSize { get; set; } = 4;
+
+        ///// <summary>
+        ///// If true, spectators (non-playing observers) are permitted.
+        ///// Semantic handling of spectators is left to client/server logic.
+        ///// Default is true.
+        ///// </summary>
+        //public bool AllowSpectators { get; set; } = true;
     }
 
     public class Participant

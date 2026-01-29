@@ -83,7 +83,7 @@ namespace SessionApp.Services
                 return "Session Has Expired";
 
             // Do not allow joining after a game has started
-            if (session.IsGameStarted) // maybe change this
+            if (session.IsGameStarted && !session.Settings.AllowJoinAfterStart)
                 return "Game Has Started";
 
             var participant = new Participant

@@ -69,6 +69,42 @@ namespace SessionApp.Controllers
             return Ok(new GetRoomResponse(session.Code, session.HostId, session.CreatedAtUtc, session.ExpiresAtUtc, session.Participants.Count, participants));
         }
 
+        // New endpoint: update room settings
+        // POST api/rooms/{code}/settings
+        [HttpPost("{code}/settings")]
+        public async Task<IActionResult> UpdateSettings(string code, [FromBody] UpdateRoomSettingsRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(code) || request is null)
+                return BadRequest(new { message = "code and request body are required" });
+
+            if (string.IsNullOrWhiteSpace(request.HostId))
+                return BadRequest(new { message = "HostId is required to update settings" });
+
+            var session = _roomService.GetSession(code);
+            if (session is null)
+                return NotFound(new { message = "Room not found or expired" });
+
+            // Simple authorization: only the host may change settings
+            if (!string.Equals(session.HostId, request.HostId, StringComparison.Ordinal))
+                return Forbid();
+
+            lock (session)
+            {
+                // Add settings here
+            }
+
+            var payload = new
+            {
+                RoomCode = session.Code,
+                Settings = session.Settings
+            };
+
+            // Notify connected clients in the room that settings changed
+            await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("SettingsChanged", payload);
+
+            return Ok(session.Settings);
+        }
+
         // New GET endpoint that starts the game for a room and notifies connected clients.
         // Note: this endpoint performs a state change (starts the game) and therefore returns 404 when it cannot start.
         [HttpGet("{code}/start")]
@@ -295,4 +331,7 @@ namespace SessionApp.Controllers
 
     // Updated GetRoomResponse now includes the participants array
     public record GetRoomResponse(string Code, string HostId, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, int ParticipantCount, RoomParticipant[] Participants);
+
+    // Request DTO for updating room settings.
+    public record UpdateRoomSettingsRequest(string HostId, int MaxGroupSize = 4, bool AllowJoinAfterStart = false, bool AllowSpectators = true);
 }
