@@ -79,11 +79,17 @@ namespace SessionApp.Controllers
 
             if (groups is null)
                 return NotFound(new { message = $"Error: {errorMessage}" });
-            
+
+            var round = -1;
+            var testGroup = groups.FirstOrDefault();
+            if (groups.Any() && testGroup != null)
+                round = testGroup.RoundNumber;
+
             var payload = new
             {
                 RoomCode = code.ToUpperInvariant(),
-                Groups = groups.Select(g => g.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray()
+                Round = round,
+                Groups = groups.Select(g => g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray(),
             };
 
             // Broadcast the GameStarted event to clients in the room group
@@ -96,18 +102,23 @@ namespace SessionApp.Controllers
         // Start a new round for an already-started session (re-shuffles remaining participants and re-partitions groups).
         [HttpPost("{code}/round/start")]
         public async Task<IActionResult> StartNewRound(string code)
-        {
+        {   
             var errorMessage = string.Empty;
+
             var groups = _roomService.StartNewRound(code, ref errorMessage);
             if (groups is null)
-            {
                 return NotFound(new { message = $"Error: {errorMessage}" });
-            }
+
+            var round = -1;
+            var testGroup = groups.FirstOrDefault();
+            if (groups.Any() && testGroup != null)
+                round = testGroup.RoundNumber;
 
             var payload = new
             {
                 RoomCode = code.ToUpperInvariant(),
-                Groups = groups.Select(g => g.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray()
+                Round = round,
+                Groups = groups.Select(g => g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray()
             };
 
             // Broadcast the RoundStarted event to clients in the room group
@@ -132,24 +143,64 @@ namespace SessionApp.Controllers
                 return NotFound(new { message = "Game has not been started for this room" });
 
             // Find the group that contains the participant
-            for (int i = 0; i < session.Groups.Count; i++)
+            foreach (var group in session.Groups)
             {
-                var group = session.Groups[i];
-                if (group.Any(p => string.Equals(p.Id, participantId, StringComparison.Ordinal)))
+                if (group.Participants.ContainsKey(participantId))
                 {
-                    var members = group.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray();
+                    var members = group.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray();
                     var result = new
                     {
                         RoomCode = session.Code,
                         ParticipantId = participantId,
-                        GroupNumber = i + 1, // one-based
-                        Members = members
+                        GroupNumber = group.GroupNumber,
+                        Members = members,
+                        Round = group.RoundNumber,
+                        Result = group.HasResult,
+                        Winner = group.WinnerParticipantId,
+                        Draw = group.IsDraw,
                     };
                     return Ok(result);
                 }
             }
 
             return NotFound(new { message = "Participant not found in any group for this room" });
+        }
+
+        // GET api/rooms/{code}/archived
+        // Returns all archived rounds (older rounds first) with their groups and member details.
+        [HttpGet("{code}/archived")]
+        public IActionResult GetArchivedRounds(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                return BadRequest(new { message = "code is required" });
+
+            var session = _room_service_snapshot(code);
+            if (session is null)
+                return NotFound(new { message = "Room not found or expired" });
+
+            var archived = session.ArchivedRounds;
+            var rounds = archived.Select(roundGroups =>
+            {
+                var roundNumber = roundGroups.FirstOrDefault()?.RoundNumber ?? -1;
+                var groups = roundGroups.Select(g => new
+                {
+                    GroupNumber = g.GroupNumber,
+                    Round = g.RoundNumber,
+                    Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                    Result = g.HasResult,
+                    Winner = g.WinnerParticipantId,
+                    Draw = g.IsDraw
+                }).ToArray();
+
+                return new
+                {
+                    RoomCode = session.Code,
+                    RoundNumber = roundNumber,
+                    Groups = groups
+                };
+            }).ToArray();
+
+            return Ok(rounds);
         }
 
         // POST api/rooms/{code}/report
@@ -200,7 +251,7 @@ namespace SessionApp.Controllers
             if (!groupIndex.HasValue || session.Groups is null || groupIndex < 0 || groupIndex >= session.Groups.Count)
                 return BadRequest(new { message = "Invalid group index" });
 
-            var members = session.Groups[groupIndex.Value]
+            var members = session.Groups[groupIndex.Value].Participants.Values
                 .Select(p => new { p.Id, p.Name, p.JoinedAtUtc })
                 .ToArray();
 

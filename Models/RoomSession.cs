@@ -19,19 +19,21 @@ namespace SessionApp.Models
         public bool IsGameStarted { get; set; }
 
         // If a single winner is reported for the entire session previously — kept for compatibility but
-        // per-group results are stored in GroupStates.
+        // per-group results are stored in Groups.
         public bool IsGameEnded { get; set; }
 
-        // If a single winner is stored previously — kept for compatibility; per-group winners are in GroupStates.
+        public int CurrentRound { get; set; } = 0;
+
+        // If a single winner is stored previously — kept for compatibility; per-group winners are in Groups.
         public string? WinnerParticipantId { get; set; }
 
-        // Groups are represented as an ordered, read-only list of read-only lists.
-        // Each inner list is a group (up to 4 participants). The last group may contain fewer than 4 participants.
-        public IReadOnlyList<IReadOnlyList<Participant>>? Groups { get; set; }
+        // Groups are represented as an ordered, read-only list.
+        // Each Group holds its participants (keyed by participant id) and per-group state such as round number and result.
+        public IReadOnlyList<Group>? Groups { get; set; }
 
-        // Per-group state: stores whether a group has a win/draw and (if win) the winner participant id.
-        // The collection length matches Groups (one state entry per group).
-        public IReadOnlyList<GroupState>? GroupStates { get; set; }
+        // Archived groups for completed rounds. Each entry is a read-only list representing the groups of a past round.
+        // The list is ordered by round (older rounds first).
+        public List<IReadOnlyList<Group>> ArchivedRounds { get; } = new();
 
         public bool IsExpiredUtc() => DateTime.UtcNow >= ExpiresAtUtc;
     }
@@ -43,9 +45,16 @@ namespace SessionApp.Models
         public DateTime JoinedAtUtc { get; init; } = DateTime.UtcNow;
     }
 
-    // Represents the outcome state for a single group in a session/round.
-    public class GroupState
+    // Represents a single group (up to 4 participants) and its per-round state.
+    public class Group
     {
+        public int GroupNumber { get; set; }
+        // Participants keyed by participant id
+        public ConcurrentDictionary<string, Participant> Participants { get; } = new();
+
+        // Round number this group belongs to
+        public int RoundNumber { get; set; }
+
         // If true the group was declared a draw.
         public bool IsDraw { get; set; }
 

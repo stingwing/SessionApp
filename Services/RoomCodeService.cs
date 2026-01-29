@@ -23,10 +23,10 @@ namespace SessionApp.Services
         public event Action<RoomSession, Participant>? ParticipantJoined;
 
         // New event: invoked when a game is successfully started and groups are created
-        public event Action<RoomSession, IReadOnlyList<IReadOnlyList<Participant>>>? GameStarted;
+        public event Action<RoomSession, IReadOnlyList<Group>>? GameStarted;
 
         // New event: invoked when a new round is started (re-grouping during an ongoing session)
-        public event Action<RoomSession, IReadOnlyList<IReadOnlyList<Participant>>>? NewRoundStarted;
+        public event Action<RoomSession, IReadOnlyList<Group>>? NewRoundStarted;
 
         // New event: invoked when a game/group ends (win/draw). groupIndex provided by controller/service consumer via GetSession.
         public event Action<RoomSession, ReportOutcomeType, string?>? GameEnded;
@@ -151,9 +151,36 @@ namespace SessionApp.Services
         /// The last group may contain fewer than 4 participants if the total is not divisible by 4.
         /// Returns the groups on success; returns null if session not found, expired, already started, or has no participants.
         /// </summary>
-        public IReadOnlyList<IReadOnlyList<Participant>>? StartGame(string code, ref string errorMessage)
+        public IReadOnlyList<Group>? StartGame(string code, ref string errorMessage)
         {
+            var session = RoundHandler(code, false, ref errorMessage);
+            if (session == null || session.Groups == null || errorMessage != string.Empty)
+                return null;
 
+            // Notify subscribers (SignalR hub can forward to clients)
+            GameStarted?.Invoke(session, session.Groups);
+            return session.Groups;
+        }
+
+        /// <summary>
+        /// Starts a new round for an ongoing session (re-shuffles remaining participants and re-partitions groups).
+        /// Returns the new groups on success; returns null if session not found, expired, not started, or there are no participants.
+        /// Dropped participants have already been removed from session.Participants and therefore will not be included.
+        /// </summary>
+        public IReadOnlyList<Group>? StartNewRound(string code, ref string errorMessage)
+        {
+            var session = RoundHandler(code, true, ref errorMessage);
+
+            if (session == null || session.Groups == null || errorMessage != string.Empty)
+                return null;
+
+            // Notify subscribers that a new round started
+            NewRoundStarted?.Invoke(session, session.Groups);
+            return session.Groups;
+        }
+
+        private RoomSession? RoundHandler(string code, bool newRound,ref string errorMessage)
+        {
             if (string.IsNullOrWhiteSpace(code))
             {
                 errorMessage = "Code is null or empty";
@@ -169,9 +196,10 @@ namespace SessionApp.Services
 
             lock (session)
             {
-                if (session.IsGameStarted)
+                // Only allow starting a new round for an already started session
+                if (session.IsGameStarted && !newRound)
                 {
-                    errorMessage = "Game has already started";
+                    errorMessage = "Game Has Already Started";
                     return null;
                 }
 
@@ -188,91 +216,46 @@ namespace SessionApp.Services
                     return null;
                 }
 
-                // Shuffle using cryptographic RNG (Fisher-Yates)
-                Shuffle(participants);
+                session.CurrentRound++;
 
-                var groups = new List<IReadOnlyList<Participant>>();
-                for (int i = 0; i < participants.Count; i += 4)
+                if (session.Groups != null && newRound)
                 {
-                    var group = participants.Skip(i).Take(4).ToArray();
-                    groups.Add(Array.AsReadOnly(group));
+                    var snapshot = SnapshotGroups(session.Groups);
+                    session.ArchivedRounds.Add(snapshot);
                 }
+
+                Shuffle(participants);
+                var groups = AddToGroups(participants, session);
 
                 session.Groups = Array.AsReadOnly(groups.ToArray());
                 session.IsGameStarted = true;
-
-                // initialize per-group states
-                session.GroupStates = Array.AsReadOnly(groups.Select(_ => new GroupState()).ToArray());
-
-                // Notify subscribers (SignalR hub can forward to clients)
-                GameStarted?.Invoke(session, session.Groups);
-
-                return session.Groups;
+                return session;
             }
         }
 
-        /// <summary>
-        /// Starts a new round for an ongoing session (re-shuffles remaining participants and re-partitions groups).
-        /// Returns the new groups on success; returns null if session not found, expired, not started, or there are no participants.
-        /// Dropped participants have already been removed from session.Participants and therefore will not be included.
-        /// </summary>
-        public IReadOnlyList<IReadOnlyList<Participant>>? StartNewRound(string code, ref string errorMessage)
+        private IReadOnlyList<Group> SnapshotGroups(IReadOnlyList<Group> groups)
         {
-            if (string.IsNullOrWhiteSpace(code))
+            var snapshot = new List<Group>(groups.Count);
+            foreach (var g in groups)
             {
-                errorMessage = "Code is null or empty"; 
-                return null;
+                var copy = new Group
+                {
+                    GroupNumber = g.GroupNumber,
+                    RoundNumber = g.RoundNumber,
+                    IsDraw = g.IsDraw,
+                    WinnerParticipantId = g.WinnerParticipantId
+                };
+
+                // Copy participants (Participant is immutable-like — we can reuse the instances)
+                foreach (var p in g.Participants.Values)
+                {
+                    copy.Participants[p.Id] = p;
+                }
+
+                snapshot.Add(copy);
             }
-           
-            var key = code.ToUpperInvariant();
-            if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
-            {
-                errorMessage = "Code is Invalid or Expired";
-                return null;
-            }
 
-            lock (session)
-            {
-                // Only allow starting a new round for an already started session
-                if (session.IsGameStarted)
-                {
-                    errorMessage = "Game has already started";
-                    return null;
-                }
-
-                var participants = session.Participants.Values.ToList();
-                if (!participants.Any())
-                {
-                    errorMessage = "Game has no players";
-                    return null;
-                }
-
-                if (participants.Count % 3 == 0 || participants.Count % 4 == 0)
-                {
-                    errorMessage = $"The number of participants {participants.Count} does not divide into groups of 3 or 4";
-                    return null;
-                }
-
-                // Shuffle and partition as in StartGame
-                Shuffle(participants);
-
-                var groups = new List<IReadOnlyList<Participant>>();
-                for (int i = 0; i < participants.Count; i += 4)
-                {
-                    var group = participants.Skip(i).Take(4).ToArray();
-                    groups.Add(Array.AsReadOnly(group));
-                }
-
-                session.Groups = Array.AsReadOnly(groups.ToArray());
-
-                // initialize per-group states for the new round
-                session.GroupStates = Array.AsReadOnly(groups.Select(_ => new GroupState()).ToArray());
-
-                // Notify subscribers that a new round started
-                NewRoundStarted?.Invoke(session, session.Groups);
-
-                return session.Groups;
-            }
+            return Array.AsReadOnly(snapshot.ToArray());
         }
 
         private void Shuffle<T>(IList<T> list)
@@ -283,6 +266,27 @@ namespace SessionApp.Services
                 int j = RandomNumberGenerator.GetInt32(i + 1);
                 (list[i], list[j]) = (list[j], list[i]);
             }
+        }
+
+        private List<Group> AddToGroups(List<Participant> participants, RoomSession session) // This will need to change to handle the randomization and grouping for new rounds
+        {
+            var groups = new List<Group>();
+            for (int i = 0; i < participants.Count; i += 4)
+            {
+                var groupMembers = participants.Skip(i).Take(4).ToArray();
+                var grp = new Group
+                {
+                    RoundNumber = session.CurrentRound,
+                    GroupNumber = groups.Count + 1
+                };
+
+                foreach (var p in groupMembers)
+                    grp.Participants[p.Id] = p;
+
+                groups.Add(grp);
+            }
+
+            return groups;
         }
 
         private string GenerateCode(int length)
@@ -344,24 +348,12 @@ namespace SessionApp.Services
 
             lock (session)
             {
-                if (!session.IsGameStarted || session.Groups is null || session.GroupStates is null)
+                if (!session.IsGameStarted || session.Groups is null)
                     return ReportOutcomeResult.NotStarted;
 
-                // Find which group (if any) the participant belongs to in the current round
-                var foundGroup = -1;
-                for (var i = 0; i < session.Groups.Count; i++)
-                {
-                    var group = session.Groups[i];
-                    if (group.Any(p => string.Equals(p.Id, participantId, StringComparison.Ordinal)))
-                    {
-                        foundGroup = i;
-                        break;
-                    }
-                }
-
+                // Handle DropOut (remove from active participants)
                 if (outcome == ReportOutcomeType.DropOut)
                 {
-                    // Remove from active participants (so they won't be included in next round)
                     if (session.Participants.TryRemove(participantId, out var removed))
                     {
                         removedParticipant = removed;
@@ -372,14 +364,18 @@ namespace SessionApp.Services
                     return ReportOutcomeResult.ParticipantNotFound;
                 }
 
-                // For Win/Draw we require the participant to be in a group for the current round
-                if (foundGroup < 0)
+                // For Win/Draw we require the participant to be in a group for the current round.
+                // Use GroupNumber from the Group instance rather than deriving the index manually.
+                var currentGroup = session.Groups.FirstOrDefault(g => g.Participants.ContainsKey(participantId));
+                if (currentGroup is null)
                     return ReportOutcomeResult.ParticipantNotFound;
 
-                groupIndex = foundGroup;
-                var groupState = session.GroupStates[foundGroup];
+                // Maintain existing external contract: groupIndex is zero-based index into session.Groups
+                groupIndex = currentGroup.GroupNumber - 1;
+                if (groupIndex < 0)
+                    groupIndex = null;
 
-                if (groupState.HasResult)
+                if (currentGroup.HasResult)
                     return ReportOutcomeResult.AlreadyEnded;
 
                 if (outcome == ReportOutcomeType.Win)
@@ -388,8 +384,8 @@ namespace SessionApp.Services
                     if (!session.Participants.ContainsKey(participantId))
                         return ReportOutcomeResult.ParticipantNotFound;
 
-                    groupState.WinnerParticipantId = participantId;
-                    groupState.IsDraw = false;
+                    currentGroup.WinnerParticipantId = participantId;
+                    currentGroup.IsDraw = false;
                     winnerParticipantId = participantId;
 
                     // Notify subscribers
@@ -399,8 +395,8 @@ namespace SessionApp.Services
 
                 if (outcome == ReportOutcomeType.Draw)
                 {
-                    groupState.IsDraw = true;
-                    groupState.WinnerParticipantId = null;
+                    currentGroup.IsDraw = true;
+                    currentGroup.WinnerParticipantId = null;
 
                     GameEnded?.Invoke(session, outcome, null);
                     return ReportOutcomeResult.Success;
