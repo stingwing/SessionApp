@@ -21,16 +21,19 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod();
     });
 });
-
-// Add Database Context
+// Add Database Context - PostgreSQL
 builder.Services.AddDbContext<SessionDbContext>(options =>
 {
-    // Option 1: SQLite (recommended for easy deployment)
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection") 
-        ?? "Data Source=sessions.db");
+    var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
+        ?? "Host=localhost;Database=sessionapp;Username=postgres;Password=12345";
     
-    // Option 2: SQL Server (uncomment and comment out SQLite above)
-    // options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+    options.UseNpgsql(connectionString, npgsqlOptions =>
+    {
+        npgsqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 5,
+            maxRetryDelay: TimeSpan.FromSeconds(10),
+            errorCodesToAdd: null);
+    });
 });
 
 // Register repository
@@ -65,7 +68,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<SessionDbContext>();
-    db.Database.EnsureCreated();
+    await db.Database.MigrateAsync();
 }
 
 // Wire RoomCodeService events to SignalR hub

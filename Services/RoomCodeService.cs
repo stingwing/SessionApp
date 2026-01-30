@@ -272,8 +272,11 @@ namespace SessionApp.Services
                     session.ArchivedRounds.Add(snapshot);
                 }
 
-                Shuffle(participants);
-                var groups = AddToGroups(participants, session);
+                var groups = new List<Group>();
+             //   if (!newRound)     
+                    groups = RandomizeFirstRound(participants, session);
+            //    else
+                  //  groups = RanzomizeRound(participants, session);
 
                 session.Groups = Array.AsReadOnly(groups.ToArray());
                 session.IsGameStarted = true;
@@ -308,18 +311,19 @@ namespace SessionApp.Services
             return Array.AsReadOnly(snapshot.ToArray());
         }
 
-        private void Shuffle<T>(IList<T> list)
+        private List<Group> RandomizeFirstRound(List<Participant> participants, RoomSession session)
         {
+            var list = participants.ToList();
             // Fisher-Yates using RandomNumberGenerator.GetInt32 (uniform)
             for (int i = list.Count - 1; i > 0; i--)
             {
                 int j = RandomNumberGenerator.GetInt32(i + 1);
                 (list[i], list[j]) = (list[j], list[i]);
             }
-        }
 
-        private List<Group> AddToGroups(List<Participant> participants, RoomSession session) // This will need to change to handle the randomization and grouping for new rounds
-        {
+
+            // rewrite this to handle groups of 3/4/5 depending on settings
+            // if only 4 randomly select players to have a bye
             var groups = new List<Group>();
             for (int i = 0; i < participants.Count; i += 4)
             {
@@ -335,6 +339,29 @@ namespace SessionApp.Services
 
                 groups.Add(grp);
             }
+
+            return groups;
+        }
+
+        private List<Group> RanzomizeRound(List<Participant> participants, RoomSession session)
+        {
+            var groups = new List<Group>();
+
+            //if (session.Settings.PrioitizeWinners)
+            //{
+                
+            
+            
+            //}
+
+
+
+
+
+
+
+
+
 
             return groups;
         }

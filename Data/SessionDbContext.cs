@@ -20,14 +20,19 @@ namespace SessionApp.Data
             modelBuilder.Entity<SessionEntity>(entity =>
             {
                 entity.HasKey(e => e.Code);
-                entity.Property(e => e.HostId).IsRequired();
-                entity.Property(e => e.SettingsJson).HasDefaultValue("{}");
+                entity.Property(e => e.Code).HasMaxLength(10);
+                entity.Property(e => e.HostId).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.SettingsJson).HasDefaultValue("{}").HasColumnType("jsonb");
+                entity.Property(e => e.WinnerParticipantId).HasMaxLength(100);
                 entity.HasIndex(e => e.ExpiresAtUtc);
             });
 
             modelBuilder.Entity<ParticipantEntity>(entity =>
             {
                 entity.HasKey(e => e.Id);
+                entity.Property(e => e.SessionCode).IsRequired().HasMaxLength(10);
+                entity.Property(e => e.ParticipantId).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Name).HasMaxLength(200);
                 entity.HasIndex(e => new { e.SessionCode, e.ParticipantId }).IsUnique();
                 entity.HasOne(e => e.Session)
                     .WithMany(s => s.Participants)
@@ -38,6 +43,8 @@ namespace SessionApp.Data
             modelBuilder.Entity<GroupEntity>(entity =>
             {
                 entity.HasKey(e => e.Id);
+                entity.Property(e => e.SessionCode).IsRequired().HasMaxLength(10);
+                entity.Property(e => e.WinnerParticipantId).HasMaxLength(100);
                 entity.HasOne(e => e.Session)
                     .WithMany(s => s.Groups)
                     .HasForeignKey(e => e.SessionCode)
@@ -51,6 +58,8 @@ namespace SessionApp.Data
             modelBuilder.Entity<GroupParticipantEntity>(entity =>
             {
                 entity.HasKey(e => e.Id);
+                entity.Property(e => e.ParticipantId).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Name).HasMaxLength(200);
                 entity.HasOne(e => e.Group)
                     .WithMany(g => g.GroupParticipants)
                     .HasForeignKey(e => e.GroupId)
@@ -60,6 +69,7 @@ namespace SessionApp.Data
             modelBuilder.Entity<ArchivedRoundEntity>(entity =>
             {
                 entity.HasKey(e => e.Id);
+                entity.Property(e => e.SessionCode).IsRequired().HasMaxLength(10);
                 entity.HasOne(e => e.Session)
                     .WithMany(s => s.ArchivedRounds)
                     .HasForeignKey(e => e.SessionCode)
