@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
+using SessionApp.Data;
 using SessionApp.Hubs;
 using SessionApp.Services;
 
@@ -14,14 +16,33 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowAll", policy =>
     {
         policy
-            .AllowAnyOrigin()    // Use .WithOrigins("https://example.com") for a restricted list
+            .AllowAnyOrigin()
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
 });
 
-// register room/session service (in-memory singleton)
-builder.Services.AddSingleton<RoomCodeService>();
+// Add Database Context
+builder.Services.AddDbContext<SessionDbContext>(options =>
+{
+    // Option 1: SQLite (recommended for easy deployment)
+    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection") 
+        ?? "Data Source=sessions.db");
+    
+    // Option 2: SQL Server (uncomment and comment out SQLite above)
+    // options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+});
+
+// Register repository
+builder.Services.AddScoped<SessionRepository>();
+
+// Register room/session service with database support
+builder.Services.AddSingleton<RoomCodeService>(sp =>
+{
+    var scope = sp.CreateScope();
+    var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+    return new RoomCodeService(repository);
+});
 
 // SignalR
 builder.Services.AddSignalR();
@@ -40,9 +61,16 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
-// Wire RoomCodeService events to SignalR hub to notify clients on server-side expiration events
+// Create database and apply migrations
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<SessionDbContext>();
+    db.Database.EnsureCreated();
+}
+
+// Wire RoomCodeService events to SignalR hub
 var roomService = app.Services.GetRequiredService<RoomCodeService>();
-var hubContext = app.Services.GetService<Microsoft.AspNetCore.SignalR.IHubContext<RoomsHub>>();
+var hubContext = app.Services.GetService<IHubContext<RoomsHub>>();
 if (hubContext != null)
 {
     roomService.SessionExpired += async session =>
@@ -57,28 +85,21 @@ if (hubContext != null)
     };
 }
 
-// Configure the HTTP request pipeline.
+// Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI(options =>
     {
         options.SwaggerEndpoint("/swagger/v1/swagger.json", "SessionApp API v1");
-        options.RoutePrefix = "swagger"; // reachable at /swagger
+        options.RoutePrefix = "swagger";
     });
 }
 
 app.UseHttpsRedirection();
-
-// Enable CORS globally using the named policy.
-// This will add Access-Control-Allow-Origin and related headers for cross-origin requests.
 app.UseCors("AllowAll");
-
 app.UseAuthorization();
-
 app.MapControllers();
-
-// Map the SignalR hub
 app.MapHub<RoomsHub>("/hubs/rooms");
 
 app.Run();

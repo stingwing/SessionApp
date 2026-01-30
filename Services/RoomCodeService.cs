@@ -1,3 +1,4 @@
+using SessionApp.Data;
 using SessionApp.Models;
 using System;
 using System.Collections.Concurrent;
@@ -18,6 +19,8 @@ namespace SessionApp.Services
         private readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(5);
         private bool _disposed;
 
+        private readonly SessionRepository? _repository;
+
         // Events for real-time notifications (subscribers may forward to SignalR)
         public event Action<RoomSession>? SessionExpired;
         public event Action<RoomSession, Participant>? ParticipantJoined;
@@ -34,9 +37,32 @@ namespace SessionApp.Services
         // New event: invoked when a participant drops out
         public event Action<RoomSession, Participant>? ParticipantDropped;
 
-        public RoomCodeService()
+        public RoomCodeService(SessionRepository? repository = null)
         {
+            _repository = repository;
             _cleanupTimer = new Timer(_ => CleanupExpiredSessions(), null, _cleanupInterval, _cleanupInterval);
+
+            // Load existing sessions from database on startup
+            if (_repository != null)
+            {
+                _ = LoadSessionsFromDatabaseAsync();
+            }
+        }
+
+        private async Task LoadSessionsFromDatabaseAsync()
+        {
+            try
+            {
+                var sessions = await _repository!.GetAllActiveSessionsAsync();
+                foreach (var session in sessions)
+                {
+                    _sessions[session.Code.ToUpperInvariant()] = session;
+                }
+            }
+            catch (Exception)
+            {
+                // Log error - database might not be initialized yet
+            }
         }
 
         public RoomSession CreateSession(string hostId, int codeLength = 6, TimeSpan? ttl = null)
@@ -61,7 +87,11 @@ namespace SessionApp.Services
                 };
 
                 if (_sessions.TryAdd(key, session))
+                {
+                    // Save to database
+                    _repository?.SaveSessionAsync(session).GetAwaiter().GetResult();
                     return session;
+                }
             }
 
             throw new InvalidOperationException("Unable to generate a unique room code. Try increasing code length.");
@@ -97,6 +127,8 @@ namespace SessionApp.Services
                 return $"A user with the id {participantId} is already in the game";
 
             session.Participants.AddOrUpdate(participantId, participant, (_, __) => participant);
+            // Save to database
+            _ = SaveSessionToDatabaseAsync(session);
 
             // Notify subscribers that a participant joined
             ParticipantJoined?.Invoke(session, participant);
@@ -110,10 +142,26 @@ namespace SessionApp.Services
                 return null;
 
             var key = code.ToUpperInvariant();
-            if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
-                return null;
 
-            return session;
+            if (_sessions.TryGetValue(key, out var session))
+            {
+                if (session.IsExpiredUtc())
+                    return null;
+                return session;
+            }
+
+            // Try loading from database
+            if (_repository is not null)
+            {
+                var dbSession = _repository.LoadSessionAsync(key).GetAwaiter().GetResult();
+                if (dbSession != null && !dbSession.IsExpiredUtc())
+                {
+                    _sessions[key] = dbSession;
+                    return dbSession;
+                }
+            }
+
+            return null;
         }
 
         public bool InvalidateSession(string code)
@@ -229,6 +277,8 @@ namespace SessionApp.Services
 
                 session.Groups = Array.AsReadOnly(groups.ToArray());
                 session.IsGameStarted = true;
+
+                _ = SaveSessionToDatabaseAsync(session);
                 return session;
             }
         }
@@ -403,6 +453,14 @@ namespace SessionApp.Services
                 }
 
                 return ReportOutcomeResult.Invalid;
+            }
+        }
+
+        private async Task SaveSessionToDatabaseAsync(RoomSession session)
+        {
+            if (_repository != null)
+            {
+                await _repository.SaveSessionAsync(session);
             }
         }
 
