@@ -136,7 +136,7 @@ namespace SessionApp.Controllers
 
         // POST api/rooms/{code}/round/start
         // Start a new round for an already-started session (re-shuffles remaining participants and re-partitions groups).
-        [HttpPost("{code}/round/start")]
+        [HttpGet("{code}/newround")]
         public async Task<IActionResult> StartNewRound(string code)
         {   
             var errorMessage = string.Empty;
@@ -161,6 +161,37 @@ namespace SessionApp.Controllers
             await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("RoundStarted", payload);
 
             return Ok(payload);
+        }
+
+        // GET api/rooms/{code}/current
+        // Returns which group the specified participant is in after the game has started.
+        [HttpGet("{code}/current")]
+        public IActionResult GetCurrentRound(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                return BadRequest(new { message = "code and participantId are required" });
+
+            var session = _room_service_snapshot(code);
+            if (session is null)
+                return NotFound(new { message = "Room not found or expired" });
+
+            if (!session.IsGameStarted || session.Groups is null)
+                return NotFound(new { message = "Game has not been started for this room" });
+
+            var currentRound = session.Groups;
+            var roundNumber = session.CurrentRound;
+
+            var groups = currentRound.Select(g => new
+            {
+                GroupNumber = g.GroupNumber,
+                Round = g.RoundNumber,
+                Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                Result = g.HasResult,
+                Winner = g.WinnerParticipantId,
+                Draw = g.IsDraw
+            }).ToArray();
+
+            return Ok(groups);
         }
 
         // GET api/rooms/{code}/group/{participantId}
