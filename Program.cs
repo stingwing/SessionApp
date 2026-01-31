@@ -36,16 +36,12 @@ builder.Services.AddDbContext<SessionDbContext>(options =>
     });
 });
 
-// Register repository
+// Register repository  
 builder.Services.AddScoped<SessionRepository>();
 
-// Register room/session service with database support
-builder.Services.AddSingleton<RoomCodeService>(sp =>
-{
-    var scope = sp.CreateScope();
-    var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-    return new RoomCodeService(repository);
-});
+// Register room/session service as singleton without repository dependency
+// Repository will be resolved per-request via IServiceProvider
+builder.Services.AddSingleton<RoomCodeService>();
 
 // SignalR
 builder.Services.AddSignalR();

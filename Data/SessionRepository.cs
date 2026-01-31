@@ -207,19 +207,18 @@ namespace SessionApp.Data
                 }
                 session.Groups = groupsList.AsReadOnly();
             }
-
+        
             // Load archived rounds
             foreach (var archivedRound in entity.ArchivedRounds.OrderBy(a => a.RoundNumber))
             {
-                var groupsList = new List<Group>();
-                foreach (var group in entity.Groups)
-                {
-                    if (!group.IsArchived)
-                        continue;
+                var archived = archivedRound.Groups
+                    .Where(g => g.IsArchived)
+                    .OrderBy(g => g.GroupNumber)
+                    .Select(g => MapGroup(g))
+                    .ToList()
+                    .AsReadOnly();
 
-                    groupsList.Add(MapGroup(group));
-                }
-                session.ArchivedRounds.Add(groupsList.AsReadOnly());
+                session.ArchivedRounds.Add(archived);
             }
 
             return session;
@@ -270,7 +269,7 @@ namespace SessionApp.Data
         public async Task<List<RoomSession>> GetAllActiveSessionsAsync()
         {
             var entities = await _context.Sessions
-                .Where(s => s.ExpiresAtUtc > DateTime.UtcNow)
+             //   .Where(s => s.ExpiresAtUtc > DateTime.UtcNow)
                 .Include(s => s.Participants)
                 .Include(s => s.Groups.Where(g => !g.IsArchived))
                     .ThenInclude(g => g.GroupParticipants)

@@ -57,9 +57,9 @@ namespace SessionApp.Controllers
         }
 
         [HttpGet("{code}")]
-        public IActionResult Get(string code)
+        public async Task<IActionResult> Get(string code)
         {
-            var session = _roomService.GetSession(code);
+            var session = await _roomService.GetSessionAsync(code);
             if (session is null) return NotFound();
 
             var participants = session.Participants.Values
@@ -80,7 +80,7 @@ namespace SessionApp.Controllers
             if (string.IsNullOrWhiteSpace(request.HostId))
                 return BadRequest(new { message = "HostId is required to update settings" });
 
-            var session = _roomService.GetSession(code);
+            var session = await _roomService.GetSessionAsync(code);
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 
@@ -166,12 +166,12 @@ namespace SessionApp.Controllers
         // GET api/rooms/{code}/current
         // Returns which group the specified participant is in after the game has started.
         [HttpGet("{code}/current")]
-        public IActionResult GetCurrentRound(string code)
+        public async Task<IActionResult> GetCurrentRound(string code)
         {
             if (string.IsNullOrWhiteSpace(code))
                 return BadRequest(new { message = "code and participantId are required" });
 
-            var session = _room_service_snapshot(code);
+            var session = await _roomService.GetSessionAsync(code);
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 
@@ -197,12 +197,12 @@ namespace SessionApp.Controllers
         // GET api/rooms/{code}/group/{participantId}
         // Returns which group the specified participant is in after the game has started.
         [HttpGet("{code}/group/{participantId}")]
-        public IActionResult GetParticipantGroup(string code, string participantId )
+        public async Task<IActionResult> GetParticipantGroup(string code, string participantId )
         {
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(participantId))
                 return BadRequest(new { message = "code and participantId are required" });
 
-            var session = _room_service_snapshot(code);
+            var session = await _roomService.GetSessionAsync(code);
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 
@@ -236,12 +236,12 @@ namespace SessionApp.Controllers
         // GET api/rooms/{code}/archived
         // Returns all archived rounds (older rounds first) with their groups and member details.
         [HttpGet("{code}/archived")]
-        public IActionResult GetArchivedRounds(string code)
+        public async Task<IActionResult> GetArchivedRounds(string code)
         {
             if (string.IsNullOrWhiteSpace(code))
                 return BadRequest(new { message = "code is required" });
 
-            var session = _room_service_snapshot(code);
+            var session = await _roomService.GetSessionAsync(code);
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 
@@ -319,7 +319,7 @@ namespace SessionApp.Controllers
             if (string.IsNullOrWhiteSpace(request.HostId))
                 return BadRequest(new { message = "HostId is required to end session" });
 
-            var session = _roomService.GetSession(code);
+            var session = await _roomService.GetSessionAsync(code);
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 
@@ -372,11 +372,9 @@ namespace SessionApp.Controllers
             return Ok(payload);
         }
 
-        private RoomSession? _room_service_snapshot(string code) => _roomService.GetSession(code);
-
         private async Task<IActionResult> HandleGroupEndedBroadcast(string code, string result, string? winnerId, int? groupIndex)
         {
-            var session = _roomService.GetSession(code);
+            var session = await _roomService.GetSessionAsync(code);
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 

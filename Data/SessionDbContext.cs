@@ -5,10 +5,7 @@ namespace SessionApp.Data
 {
     public class SessionDbContext : DbContext
     {
-        public SessionDbContext(DbContextOptions<SessionDbContext> options) : base(options)
-        {
-        }
-
+        public SessionDbContext(DbContextOptions<SessionDbContext> options) : base(options) { }
         public DbSet<SessionEntity> Sessions { get; set; }
         public DbSet<ParticipantEntity> Participants { get; set; }
         public DbSet<GroupEntity> Groups { get; set; }
