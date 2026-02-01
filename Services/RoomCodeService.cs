@@ -280,6 +280,12 @@ namespace SessionApp.Services
                 return null;
             }
 
+            if (session.IsGameEnded)
+            {
+                errorMessage = "The Game has ended";
+                return null;
+            }
+
             lock (session)
             {
                 //// Only allow starting a new round for an already started session
