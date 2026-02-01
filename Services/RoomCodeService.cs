@@ -55,10 +55,13 @@ namespace SessionApp.Services
             {
                 using var scope = _serviceProvider!.CreateScope();
                 var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                var sessions = await repository.GetAllActiveSessionsAsync();
+                var sessions = await repository.GetAllSessionsAsync();
                 foreach (var session in sessions)
                 {
                     _sessions[session.Code.ToUpperInvariant()] = session;
+
+                    if (session.ExpiresAtUtc <= DateTime.UtcNow && !session.IsGameEnded)
+                        CleanupExpiredSession(session.Code);
                 }
             }
             catch (Exception)
@@ -71,8 +74,6 @@ namespace SessionApp.Services
         {
             if (string.IsNullOrWhiteSpace(hostId))
                 throw new ArgumentException("hostId is required", nameof(hostId));
-
-            ttl ??= TimeSpan.FromHours(2);
 
             const int maxAttempts = 1000;
             for (var attempt = 0; attempt < maxAttempts; attempt++)
@@ -126,8 +127,11 @@ namespace SessionApp.Services
                 participantName = participantId;
 
             var key = code.ToUpperInvariant();
-            if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
-                return "Session Has Expired";
+            if (!_sessions.TryGetValue(key, out var session))
+                return "Session is invalid";
+
+            if (session.IsExpiredUtc())
+                return "Session has expired";
 
             // Do not allow joining after a game has started
             if (session.IsGameStarted && !session.Settings.AllowJoinAfterStart)
@@ -177,8 +181,8 @@ namespace SessionApp.Services
 
             if (_sessions.TryGetValue(key, out var session))
             {
-                if (session.IsExpiredUtc())
-                    return null;
+                //if (session.IsExpiredUtc()) //im not sure about this one
+                //    return null;
                 return session;
             }
 
@@ -301,8 +305,7 @@ namespace SessionApp.Services
                 if (session.Groups != null && newRound)
                 {
                     var snapshot = SnapshotGroups(session.Groups);
-                    session.ArchivedRounds.Add(snapshot);
-                   
+                    session.ArchivedRounds.Add(snapshot);                 
                 }
 
                 if(session.CurrentRound == 0 || newRound)
@@ -339,6 +342,9 @@ namespace SessionApp.Services
             var snapshot = new List<Group>(groups.Count);
             foreach (var g in groups)
             {
+                if(g.CompletedAtUtc == null)
+                    g.CompletedAtUtc = DateTime.UtcNow;
+
                 var copy = new Group
                 {
                     GroupNumber = g.GroupNumber,
@@ -384,14 +390,8 @@ namespace SessionApp.Services
 
             //Handle the first round
             if (lastRound == null)
-            {
                 firstRound = true;
-                lastRound = session.Groups;
-            }
-
-            if (lastRound == null)
-                return groups;
-
+            
             // Build pairing history from all archived rounds
             var pairingHistory = BuildPairingHistory(session.ArchivedRounds);
 
@@ -399,7 +399,7 @@ namespace SessionApp.Services
             var allWinners = new List<Participant>();
             var participantsInGroupOf3 = new HashSet<string>();
 
-            if (!firstRound)
+            if (!firstRound && lastRound != null)
             {
                 // Build a set of all participant IDs from last round for quick lookup
                 foreach (var group in lastRound)
@@ -542,7 +542,7 @@ namespace SessionApp.Services
                 {
                     RoundNumber = session.CurrentRound,
                     GroupNumber = groups.Count + 1,
-                    StartedAtUtc = DateTime.UtcNow // Add this line
+                    StartedAtUtc = DateTime.UtcNow
                 };
 
                 foreach (var p in groupMembers)
@@ -578,7 +578,7 @@ namespace SessionApp.Services
                     {
                         RoundNumber = session.CurrentRound,
                         GroupNumber = groups.Count + 1,
-                        StartedAtUtc = DateTime.UtcNow // Add this line
+                        StartedAtUtc = DateTime.UtcNow
                     };
 
                     foreach (var p in groupMembers)
@@ -880,6 +880,8 @@ namespace SessionApp.Services
                 if (currentGroup is null)
                     return ReportOutcomeResult.ParticipantNotFound;
 
+                if(currentGroup.CompletedAtUtc == null)
+                    currentGroup.CompletedAtUtc = DateTime.UtcNow;
                 // Maintain existing external contract: groupIndex is zero-based index into session.Groups
                 groupIndex = currentGroup.GroupNumber - 1;
                 if (groupIndex < 0)
@@ -987,6 +989,90 @@ namespace SessionApp.Services
 
                 return ReportOutcomeResult.Invalid;
             }
+        }
+
+        /// <summary>
+        /// Cleanup method that archives current groups and marks expired sessions as ended.
+        /// Unlike EndSession in the controller, this doesn't require host authorization and is intended for expired sessions.
+        /// Returns true if the session was found and cleaned up, false otherwise.
+        /// </summary>
+        public bool CleanupExpiredSession(string code) // this might need to change for example should we clean up sessions? or wait for the end game event. Should we delete sessions that were never started?
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                return false;
+
+            var key = code.ToUpperInvariant();
+            if (!_sessions.TryGetValue(key, out var session))
+                return false;
+
+            // Check if session has expired
+            var isExpired = session.ExpiresAtUtc <= DateTime.UtcNow;
+
+            lock (session)
+            {
+                // If game was started and has groups, archive them
+                if (session.IsGameStarted && session.Groups is not null && session.Groups.Count > 0)
+                {
+                    var snapshot = SnapshotGroups(session.Groups);
+                    session.ArchivedRounds.Add(snapshot);
+                }
+
+                session.IsGameEnded = true;  
+            }
+
+            // Save to database (fire and forget)
+            if (_serviceProvider != null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                        await repository.SaveSessionAsync(session);
+                    }
+                    catch (Exception)
+                    {
+                        // Log error
+                    }
+                });
+            }
+
+            return true;
+        }
+
+        public async Task<List<RoomSession>> GetAllSessionsAsync()
+        {
+            // First get all sessions from memory
+            var memorySessions = _sessions.Values.ToList();
+
+            // If we have a service provider, also load from database and merge
+            if (_serviceProvider != null)
+            {
+                try
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                    var dbSessions = await repository.GetAllSessionsAsync();
+
+                    // Merge database sessions into memory cache
+                    foreach (var dbSession in dbSessions)
+                    {
+                        var key = dbSession.Code.ToUpperInvariant();
+                        if (!_sessions.ContainsKey(key))
+                        {
+                            _sessions[key] = dbSession;
+                            memorySessions.Add(dbSession);
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    // Log error - fall back to memory-only sessions
+                }
+            }
+
+            return memorySessions;
         }
 
         public void Dispose()

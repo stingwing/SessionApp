@@ -35,7 +35,7 @@ namespace SessionApp.Controllers
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateRoomRequest request)
         {
-            var session = _roomService.CreateSession(request.HostId, request.CodeLength, request.Ttl ?? TimeSpan.FromHours(2));
+            var session = _roomService.CreateSession(request.HostId, request.CodeLength, request.Ttl ?? TimeSpan.FromDays(7));
 
             // Notify connected clients (optional: clients may join groups by room code)
             await _hubContext.Clients.Group(session.Code).SendAsync("RoomCreated", new { session.Code, session.HostId, session.ExpiresAtUtc });
@@ -68,6 +68,65 @@ namespace SessionApp.Controllers
                 .ToArray();
 
             return Ok(new GetRoomResponse(session.Code, session.HostId, session.CreatedAtUtc, session.ExpiresAtUtc, session.Participants.Count, participants));
+        }
+
+        // GET api/rooms
+        // Returns all sessions with their full data including participants, groups, and archived rounds.
+        [HttpGet("/all")]
+        public async Task<IActionResult> GetAllSessions()
+        {
+            var sessions = await _roomService.GetAllSessionsAsync();
+
+            var result = sessions.Select(session => new
+            {
+                Code = session.Code,
+                HostId = session.HostId,
+                CreatedAtUtc = session.CreatedAtUtc,
+                ExpiresAtUtc = session.ExpiresAtUtc,
+                IsGameStarted = session.IsGameStarted,
+                IsGameEnded = session.IsGameEnded,
+                CurrentRound = session.CurrentRound,
+                WinnerParticipantId = session.WinnerParticipantId,
+                Settings = session.Settings,
+                ParticipantCount = session.Participants.Count,
+                Participants = session.Participants.Values.Select(p => new RoomParticipant(p.Id, p.Name, p.JoinedAtUtc)).ToArray(),
+                CurrentGroups = session.Groups?.Select(g => new
+                {
+                    GroupNumber = g.GroupNumber,
+                    Round = g.RoundNumber,
+                    Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                    Result = g.HasResult,
+                    Winner = g.WinnerParticipantId,
+                    Draw = g.IsDraw,
+                    StartedAtUtc = g.StartedAtUtc,
+                    Statistics = g.Statistics
+                }).ToArray(),
+                ArchivedRoundsCount = session.ArchivedRounds.Count,
+                ArchivedRounds = session.ArchivedRounds.Select(roundGroups =>
+                {
+                    var roundNumber = roundGroups.FirstOrDefault()?.RoundNumber ?? -1;
+                    var groups = roundGroups.Select(g => new
+                    {
+                        GroupNumber = g.GroupNumber,
+                        Round = g.RoundNumber,
+                        Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                        Result = g.HasResult,
+                        Winner = g.WinnerParticipantId,
+                        Draw = g.IsDraw,
+                        StartTime = g.StartedAtUtc,
+                        EndTime = g.CompletedAtUtc,
+                        Statistics = g.Statistics
+                    }).ToArray();
+
+                    return new
+                    {
+                        RoundNumber = roundNumber,
+                        Groups = groups
+                    };
+                }).ToArray()
+            }).ToArray();
+
+            return Ok(result);
         }
 
         // New endpoint: update room settings
@@ -127,6 +186,7 @@ namespace SessionApp.Controllers
                 RoomCode = code.ToUpperInvariant(),
                 Round = round,
                 Groups = groups.Select(g => g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray(),
+
             };
 
             // Broadcast the GameStarted event to clients in the room group
@@ -190,7 +250,7 @@ namespace SessionApp.Controllers
                 Result = g.HasResult,
                 Winner = g.WinnerParticipantId,
                 Draw = g.IsDraw,
-                StartTime = g.StartedAtUtc,
+                StartedAtUtc = g.StartedAtUtc,
                 Statistics = g.Statistics,
             }).ToArray();
 
@@ -228,6 +288,8 @@ namespace SessionApp.Controllers
                         Result = group.HasResult,
                         Winner = group.WinnerParticipantId,
                         Draw = group.IsDraw,
+                        Statistics = group.Statistics,
+                        StartedAtUtc = group.StartedAtUtc,
                     };
                     return Ok(result);
                 }
@@ -260,8 +322,8 @@ namespace SessionApp.Controllers
                     Result = g.HasResult,
                     Winner = g.WinnerParticipantId,
                     Draw = g.IsDraw,
-                    StartTime = g.StartedAtUtc,
-                    EndTime = g.CompletedAtUtc,
+                    StartedAtUtc = g.StartedAtUtc,
+                    CompletedAtUtc = g.CompletedAtUtc,
                     Statistics = g.Statistics,
                 }).ToArray();
 
@@ -339,20 +401,10 @@ namespace SessionApp.Controllers
             if (!string.Equals(session.HostId, request.HostId, StringComparison.Ordinal))
                 return Forbid();
 
-            lock (session)
-            {
-                if (!session.IsGameStarted || session.Groups is null)
-                    return BadRequest(new { message = "Game has not been started for this room" });
-
-                var snapshot = _roomService.SnapshotGroups(session.Groups);
-                session.ArchivedRounds.Add(System.Array.AsReadOnly(snapshot.ToArray()));
-
-                // Mark session ended
-                session.IsGameEnded = true;
-            }
+            _roomService.CleanupExpiredSession(code);
 
             // Prepare result payload to broadcast/return
-            var resultGroups = session.Groups.Select(g => new
+            var resultGroups = (session.Groups ?? Array.Empty<Group>()).Select(g => new
             {
                 GroupNumber = g.GroupNumber,
                 Round = g.RoundNumber,
@@ -372,14 +424,6 @@ namespace SessionApp.Controllers
 
             // Broadcast final session results
             await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("SessionEnded", payload);
-
-            // Optionally remove session from memory if requested
-            if (request.Invalidate)
-            {
-                _roomService.InvalidateSession(code);
-                // also broadcast that room was removed
-                await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("RoomInvalidated", new { RoomCode = code.ToUpperInvariant() });
-            }
 
             return Ok(payload);
         }
@@ -447,5 +491,5 @@ namespace SessionApp.Controllers
     public record UpdateRoomSettingsRequest(string HostId, int MaxGroupSize = 4, bool AllowJoinAfterStart = false, bool AllowSpectators = true);
 
     // Request DTO to end a session. HostId required for authorization.
-    public record EndSessionRequest(string HostId, bool Invalidate = false);
+    public record EndSessionRequest(string HostId);
 }

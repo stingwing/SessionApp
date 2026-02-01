@@ -294,7 +294,26 @@ namespace SessionApp.Data
         public async Task<List<RoomSession>> GetAllActiveSessionsAsync()
         {
             var entities = await _context.Sessions
-             //   .Where(s => s.ExpiresAtUtc > DateTime.UtcNow)
+                .Where(s => s.ExpiresAtUtc > DateTime.UtcNow)
+                .Include(s => s.Participants)
+                .Include(s => s.Groups.Where(g => !g.IsArchived))
+                    .ThenInclude(g => g.GroupParticipants)
+                .ToListAsync();
+
+            var sessions = new List<RoomSession>();
+            foreach (var entity in entities)
+            {
+                var session = await LoadSessionAsync(entity.Code);
+                if (session != null)
+                    sessions.Add(session);
+            }
+
+            return sessions;
+        }
+
+        public async Task<List<RoomSession>> GetAllSessionsAsync()
+        {
+            var entities = await _context.Sessions
                 .Include(s => s.Participants)
                 .Include(s => s.Groups.Where(g => !g.IsArchived))
                     .ThenInclude(g => g.GroupParticipants)

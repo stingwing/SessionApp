@@ -40,7 +40,7 @@ namespace SessionApp.Models
         // The list is ordered by round (older rounds first).
         public List<IReadOnlyList<Group>> ArchivedRounds { get; } = new();
 
-        public bool IsExpiredUtc() => DateTime.UtcNow >= ExpiresAtUtc.AddDays(1);
+        public bool IsExpiredUtc() => DateTime.UtcNow >= ExpiresAtUtc;
     }
 
     /// <summary>
@@ -57,7 +57,7 @@ namespace SessionApp.Models
         public bool PrioitizeWinners { get; set; } = true;
         public bool AllowGroupOfThree { get; set; } = true;
         public bool AllowGroupOfFive { get; set; } = false;
-
+        public TimeSpan RoundLength { get; set; } = TimeSpan.FromMinutes(90);
         /// <summary>
         /// Maximum group size used when partitioning participants. Supported values: 3 or 4.
         /// Default is 4.
