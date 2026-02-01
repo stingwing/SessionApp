@@ -96,8 +96,17 @@ namespace SessionApp.Data
             {
                 var existingGroups = await _context.Groups
                     .Where(g => g.SessionCode == sessionCode && !g.IsArchived)
+                    .Include(g => g.GroupParticipants)
                     .ToListAsync();
+                
+                // Remove group participants first
+                foreach (var existingGroup in existingGroups)
+                {
+                    _context.GroupParticipants.RemoveRange(existingGroup.GroupParticipants);
+                }
+                
                 _context.Groups.RemoveRange(existingGroups);
+                await _context.SaveChangesAsync();
             }
 
             foreach (var group in groups)
@@ -111,7 +120,11 @@ namespace SessionApp.Data
                     HasResult = group.HasResult,
                     WinnerParticipantId = group.WinnerParticipantId,
                     IsArchived = isArchived,
-                    ArchivedRoundId = archivedRoundId
+                    ArchivedRoundId = archivedRoundId,
+                    // Save new fields
+                    StartedAtUtc = group.StartedAtUtc,
+                    CompletedAtUtc = group.CompletedAtUtc,
+                    StatisticsJson = group.GetStatisticsJson()
                 };
 
                 _context.Groups.Add(groupEntity);
@@ -144,10 +157,16 @@ namespace SessionApp.Data
                 if (roundNumber == -1 || existingRoundNumbers.Contains(roundNumber))
                     continue;
 
+                // Calculate round completion time (use the latest group completion time)
+                var completedAtUtc = archivedRound
+                    .Where(g => g.CompletedAtUtc.HasValue)
+                    .Max(g => g.CompletedAtUtc);
+
                 var archivedEntity = new ArchivedRoundEntity
                 {
                     SessionCode = session.Code,
-                    RoundNumber = roundNumber
+                    RoundNumber = roundNumber,
+                    CompletedAtUtc = completedAtUtc
                 };
                 _context.ArchivedRounds.Add(archivedEntity);
                 await _context.SaveChangesAsync(); // Get ID
@@ -231,8 +250,14 @@ namespace SessionApp.Data
                 GroupNumber = entity.GroupNumber,
                 RoundNumber = entity.RoundNumber,
                 IsDraw = entity.IsDraw,
-                WinnerParticipantId = entity.WinnerParticipantId
+                WinnerParticipantId = entity.WinnerParticipantId,
+                // Load new fields
+                StartedAtUtc = entity.StartedAtUtc,
+                CompletedAtUtc = entity.CompletedAtUtc
             };
+
+            // Load statistics from JSON
+            group.SetStatisticsFromJson(entity.StatisticsJson);
 
             foreach (var p in entity.GroupParticipants)
             {

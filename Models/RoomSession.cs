@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Text.Json;
 
 namespace SessionApp.Models
 {
@@ -54,7 +55,6 @@ namespace SessionApp.Models
         ///// </summary>
         public bool AllowJoinAfterStart { get; set; } = true;
         public bool PrioitizeWinners { get; set; } = true;
-
         public bool AllowGroupOfThree { get; set; } = true;
         public bool AllowGroupOfFive { get; set; } = false;
 
@@ -77,6 +77,8 @@ namespace SessionApp.Models
         public string Id { get; init; } = null!;
         public string Name { get; init; } = null!;
         public DateTime JoinedAtUtc { get; init; } = DateTime.UtcNow;
+        public string Commander { get; set; } = string.Empty;
+        public int Points { get; set; } = 0;
     }
 
     // Represents a single group (up to 4 participants) and its per-round state.
@@ -94,8 +96,46 @@ namespace SessionApp.Models
 
         // If non-null the participant id of the winner for this group.
         public string? WinnerParticipantId { get; set; }
+        // Fixed statistics for queryability
+        public DateTime? StartedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
+        public int TurnCount { get; set; } = -1;
+        // Custom/flexible statistics stored as dictionary (will be serialized to JSON)
+        public Dictionary<string, object> Statistics { get; set; } = new Dictionary<string, object>();
 
         // Convenience
         public bool HasResult => IsDraw || !string.IsNullOrEmpty(WinnerParticipantId);
+
+        /// <summary>
+        /// Gets statistics as JSON string for database storage
+        /// </summary>
+        public string GetStatisticsJson()
+        {
+            return Statistics.Count > 0 
+                ? JsonSerializer.Serialize(Statistics) 
+                : "{}";
+        }
+
+        /// <summary>
+        /// Sets statistics from JSON string (for loading from database)
+        /// </summary>
+        public void SetStatisticsFromJson(string json)
+        {
+            if (!string.IsNullOrWhiteSpace(json) && json != "{}")
+            {
+                try
+                {
+                    var deserialized = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+                    if (deserialized != null)
+                    {
+                        Statistics = deserialized;
+                    }
+                }
+                catch
+                {
+                    Statistics = new Dictionary<string, object>();
+                }
+            }
+        }
     }
 }

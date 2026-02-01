@@ -18,10 +18,13 @@ namespace SessionApp.Data
             {
                 entity.HasKey(e => e.Code);
                 entity.Property(e => e.Code).HasMaxLength(10);
+                entity.Property(e => e.EventName).HasMaxLength(200).HasDefaultValue(string.Empty);
                 entity.Property(e => e.HostId).IsRequired().HasMaxLength(100);
                 entity.Property(e => e.SettingsJson).HasDefaultValue("{}").HasColumnType("jsonb");
                 entity.Property(e => e.WinnerParticipantId).HasMaxLength(100);
+                entity.Property(e => e.Archived).HasDefaultValue(false);
                 entity.HasIndex(e => e.ExpiresAtUtc);
+                entity.HasIndex(e => e.Archived);
             });
 
             modelBuilder.Entity<ParticipantEntity>(entity =>
@@ -30,6 +33,8 @@ namespace SessionApp.Data
                 entity.Property(e => e.SessionCode).IsRequired().HasMaxLength(10);
                 entity.Property(e => e.ParticipantId).IsRequired().HasMaxLength(100);
                 entity.Property(e => e.Name).HasMaxLength(200);
+                entity.Property(e => e.Commander).HasMaxLength(200).HasDefaultValue(string.Empty);
+                entity.Property(e => e.Points).HasDefaultValue(0);
                 entity.HasIndex(e => new { e.SessionCode, e.ParticipantId }).IsUnique();
                 entity.HasOne(e => e.Session)
                     .WithMany(s => s.Participants)
@@ -42,6 +47,7 @@ namespace SessionApp.Data
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.SessionCode).IsRequired().HasMaxLength(10);
                 entity.Property(e => e.WinnerParticipantId).HasMaxLength(100);
+                entity.Property(e => e.StatisticsJson).HasDefaultValue("{}").HasColumnType("jsonb");
                 entity.HasOne(e => e.Session)
                     .WithMany(s => s.Groups)
                     .HasForeignKey(e => e.SessionCode)
@@ -50,6 +56,8 @@ namespace SessionApp.Data
                     .WithMany(a => a.Groups)
                     .HasForeignKey(e => e.ArchivedRoundId)
                     .OnDelete(DeleteBehavior.Restrict);
+                entity.HasIndex(e => e.RoundNumber);
+                entity.HasIndex(e => e.SessionCode);
             });
 
             modelBuilder.Entity<GroupParticipantEntity>(entity =>
@@ -67,10 +75,14 @@ namespace SessionApp.Data
             {
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.SessionCode).IsRequired().HasMaxLength(10);
+                entity.Property(e => e.Commander).HasMaxLength(200).HasDefaultValue(string.Empty);
+                entity.Property(e => e.TurnCount).HasDefaultValue(-1);
+                entity.Property(e => e.StatisticsJson).HasDefaultValue("{}").HasColumnType("jsonb");
                 entity.HasOne(e => e.Session)
                     .WithMany(s => s.ArchivedRounds)
                     .HasForeignKey(e => e.SessionCode)
                     .OnDelete(DeleteBehavior.Cascade);
+                entity.HasIndex(e => new { e.SessionCode, e.RoundNumber });
             });
         }
     }

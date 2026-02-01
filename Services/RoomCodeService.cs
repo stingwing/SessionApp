@@ -344,7 +344,10 @@ namespace SessionApp.Services
                     GroupNumber = g.GroupNumber,
                     RoundNumber = g.RoundNumber,
                     IsDraw = g.IsDraw,
-                    WinnerParticipantId = g.WinnerParticipantId
+                    WinnerParticipantId = g.WinnerParticipantId,
+                    StartedAtUtc = g.StartedAtUtc,
+                    CompletedAtUtc = g.CompletedAtUtc,
+                    Statistics = new Dictionary<string, object>(g.Statistics) // Deep copy
                 };
 
                 // Copy participants (Participant is immutable-like — we can reuse the instances)
@@ -538,7 +541,8 @@ namespace SessionApp.Services
                 var grp = new Group
                 {
                     RoundNumber = session.CurrentRound,
-                    GroupNumber = groups.Count + 1
+                    GroupNumber = groups.Count + 1,
+                    StartedAtUtc = DateTime.UtcNow // Add this line
                 };
 
                 foreach (var p in groupMembers)
@@ -573,7 +577,8 @@ namespace SessionApp.Services
                     var grp = new Group
                     {
                         RoundNumber = session.CurrentRound,
-                        GroupNumber = groups.Count + 1
+                        GroupNumber = groups.Count + 1,
+                        StartedAtUtc = DateTime.UtcNow // Add this line
                     };
 
                     foreach (var p in groupMembers)
@@ -788,7 +793,8 @@ namespace SessionApp.Services
         {
             Win,
             Draw,
-            DropOut
+            DropOut,
+            DataOnly // Add this new type for statistics-only updates
         }
 
         public enum ReportOutcomeResult
@@ -806,12 +812,20 @@ namespace SessionApp.Services
         /// - Win: marks that participant's group as having a winner (one winner max per group)
         /// - Draw: marks that participant's group as a draw (everyone in that group receives draw)
         /// - DropOut: removes participant from session.Participants (they're excluded from future rounds)
+        /// Statistics: optional dictionary of custom data to store with the group result
         /// Returns a ReportOutcomeResult and out parameters for additional details:
         /// - winnerParticipantId: set for Win
         /// - removedParticipant: set for DropOut
         /// - groupIndex: zero-based index of group affected (set for Win/Draw when participant belongs to a group)
         /// </summary>
-        public ReportOutcomeResult ReportOutcome(string code, string participantId, ReportOutcomeType outcome, out string? winnerParticipantId, out Participant? removedParticipant, out int? groupIndex)
+        public ReportOutcomeResult ReportOutcome(
+            string code, 
+            string participantId, 
+            ReportOutcomeType outcome, 
+            Dictionary<string, object> statistics,
+            out string? winnerParticipantId, 
+            out Participant? removedParticipant, 
+            out int? groupIndex)
         {
             winnerParticipantId = null;
             removedParticipant = null;
@@ -835,6 +849,25 @@ namespace SessionApp.Services
                     if (session.Participants.TryRemove(participantId, out var removed))
                     {
                         removedParticipant = removed;
+                        
+                        // Save to database (fire and forget)
+                        if (_serviceProvider != null)
+                        {
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    using var scope = _serviceProvider.CreateScope();
+                                    var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                                    await repository.SaveSessionAsync(session);
+                                }
+                                catch (Exception)
+                                {
+                                    // Log error
+                                }
+                            });
+                        }
+
                         ParticipantDropped?.Invoke(session, removed);
                         return ReportOutcomeResult.Success;
                     }
@@ -842,8 +875,7 @@ namespace SessionApp.Services
                     return ReportOutcomeResult.ParticipantNotFound;
                 }
 
-                // For Win/Draw we require the participant to be in a group for the current round.
-                // Use GroupNumber from the Group instance rather than deriving the index manually.
+                // For Win/Draw/DataOnly we require the participant to be in a group for the current round.
                 var currentGroup = session.Groups.FirstOrDefault(g => g.Participants.ContainsKey(participantId));
                 if (currentGroup is null)
                     return ReportOutcomeResult.ParticipantNotFound;
@@ -853,8 +885,45 @@ namespace SessionApp.Services
                 if (groupIndex < 0)
                     groupIndex = null;
 
-                if (currentGroup.HasResult)
+                // For DataOnly, allow updates even if result exists
+                if (outcome != ReportOutcomeType.DataOnly && currentGroup.HasResult)
                     return ReportOutcomeResult.AlreadyEnded;
+
+                // Merge provided statistics with existing ones
+                if (statistics != null && statistics.Count > 0)
+                {
+                    foreach (var stat in statistics)
+                    {
+                        currentGroup.Statistics[stat.Key] = stat.Value;
+                    }
+                }
+
+                // Handle DataOnly - just update statistics without changing result
+                if (outcome == ReportOutcomeType.DataOnly)
+                {
+                    // Save to database (fire and forget)
+                    if (_serviceProvider != null)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                using var scope = _serviceProvider.CreateScope();
+                                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                                await repository.SaveSessionAsync(session);
+                            }
+                            catch (Exception)
+                            {
+                                // Log error
+                            }
+                        });
+                    }
+
+                    return ReportOutcomeResult.Success;
+                }
+
+                // Store completion timestamp for Win/Draw
+                currentGroup.CompletedAtUtc = DateTime.UtcNow;
 
                 if (outcome == ReportOutcomeType.Win)
                 {
@@ -866,6 +935,24 @@ namespace SessionApp.Services
                     currentGroup.IsDraw = false;
                     winnerParticipantId = participantId;
 
+                    // Save to database (fire and forget)
+                    if (_serviceProvider != null)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                using var scope = _serviceProvider.CreateScope();
+                                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                                await repository.SaveSessionAsync(session);
+                            }
+                            catch (Exception)
+                            {
+                                // Log error
+                            }
+                        });
+                    }
+
                     // Notify subscribers
                     GameEnded?.Invoke(session, outcome, participantId);
                     return ReportOutcomeResult.Success;
@@ -875,6 +962,24 @@ namespace SessionApp.Services
                 {
                     currentGroup.IsDraw = true;
                     currentGroup.WinnerParticipantId = null;
+
+                    // Save to database (fire and forget)
+                    if (_serviceProvider != null)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                using var scope = _serviceProvider.CreateScope();
+                                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                                await repository.SaveSessionAsync(session);
+                            }
+                            catch (Exception)
+                            {
+                                // Log error
+                            }
+                        });
+                    }
 
                     GameEnded?.Invoke(session, outcome, null);
                     return ReportOutcomeResult.Success;

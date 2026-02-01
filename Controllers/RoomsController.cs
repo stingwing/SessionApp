@@ -4,6 +4,7 @@ using SessionApp.Hubs;
 using SessionApp.Models;
 using SessionApp.Services;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using static SessionApp.Services.RoomCodeService;
@@ -188,7 +189,9 @@ namespace SessionApp.Controllers
                 Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
                 Result = g.HasResult,
                 Winner = g.WinnerParticipantId,
-                Draw = g.IsDraw
+                Draw = g.IsDraw,
+                StartTime = g.StartedAtUtc,
+                Statistics = g.Statistics,
             }).ToArray();
 
             return Ok(groups);
@@ -256,7 +259,10 @@ namespace SessionApp.Controllers
                     Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
                     Result = g.HasResult,
                     Winner = g.WinnerParticipantId,
-                    Draw = g.IsDraw
+                    Draw = g.IsDraw,
+                    StartTime = g.StartedAtUtc,
+                    EndTime = g.CompletedAtUtc,
+                    Statistics = g.Statistics,
                 }).ToArray();
 
                 return new
@@ -275,6 +281,7 @@ namespace SessionApp.Controllers
         // - Result = "win" => participant reports they won (per-group max 1 winner)
         // - Result = "draw" => participant reports a draw for their group (everyone in that group gets draw)
         // - Result = "dropout" => participant reports they dropped out (removed from future rounds)
+        // - Statistics = optional dictionary of custom statistics (e.g., { "turnCount": 12, "commander": "Atraxa" })
         [HttpPost("{code}/report")]
         public async Task<IActionResult> ReportOutcome(string code, [FromBody] ReportOutcomeRequest request)
         {
@@ -283,16 +290,20 @@ namespace SessionApp.Controllers
 
             // parse result
             var normalized = request.Result.Trim().ToLowerInvariant();
-            if (normalized != "win" && normalized != "draw" && normalized != "drop")
+            if (normalized != "win" && normalized != "draw" && normalized != "drop" && normalized != "data")
                 return BadRequest(new { message = "result must be one of: win, draw, drop" });
 
-            var outcome = normalized == "win"
-                ? ReportOutcomeType.Win
-                : normalized == "draw"
-                    ? ReportOutcomeType.Draw
-                    : ReportOutcomeType.DropOut;
-                
-            var serviceResult = _roomService.ReportOutcome(code, request.ParticipantId, outcome, out var winnerId, out var removedParticipant, out var groupIndex);
+            var outcome = normalized == "win" ? ReportOutcomeType.Win : normalized == "draw" ? ReportOutcomeType.Draw : normalized == "drop" ? ReportOutcomeType.DropOut : ReportOutcomeType.DataOnly;
+
+            // Pass statistics to the service
+            var serviceResult = _roomService.ReportOutcome(
+                code, 
+                request.ParticipantId, 
+                outcome, 
+                request.Statistics ?? new Dictionary<string, object>(),
+                out var winnerId, 
+                out var removedParticipant, 
+                out var groupIndex);
 
             return serviceResult switch
             {
@@ -300,9 +311,10 @@ namespace SessionApp.Controllers
                 ReportOutcomeResult.NotStarted => BadRequest(new { message = "Game has not been started for this room" }),
                 ReportOutcomeResult.ParticipantNotFound => NotFound(new { message = "Participant not found in room or not in current round" }),
                 ReportOutcomeResult.AlreadyEnded => BadRequest(new { message = "This group already has a result" }),
-                ReportOutcomeResult.Success when outcome == ReportOutcomeType.DropOut => await HandleDropoutBroadcast(code, removedParticipant),
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.DropOut => await HandleDropoutBroadcast(code, removedParticipant),// add statistics handling
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.Win => await HandleGroupEndedBroadcast(code, "win", winnerId, groupIndex),
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.Draw => await HandleGroupEndedBroadcast(code, "draw", null, groupIndex),
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.DataOnly => await HandleGroupEndedBroadcast(code, "data", null, groupIndex),
                 _ => StatusCode(500, new { message = "Unknown error reporting outcome" })
             };
         }
@@ -311,7 +323,7 @@ namespace SessionApp.Controllers
         // Host calls this to end the current session: archives the current groups (current round),
         // marks the session ended and broadcasts a SessionEnded event with per-group results.
         [HttpPost("{code}/end")]
-        public async Task<IActionResult> EndSession(string code, [FromBody] EndSessionRequest request)
+        public async Task<IActionResult> EndSession(string code, [FromBody] EndSessionRequest request) // change this
         {
             if (string.IsNullOrWhiteSpace(code) || request is null)
                 return BadRequest(new { message = "code and request body are required" });
@@ -418,7 +430,12 @@ namespace SessionApp.Controllers
     public record CreateRoomRequest(string HostId, int CodeLength = 6, TimeSpan? Ttl = null);
     public record CreateRoomResponse(string Code, DateTime ExpiresAtUtc);
     public record JoinRoomRequest(string ParticipantId, string ParticipantName);
-    public record ReportOutcomeRequest(string ParticipantId, string Result);
+    
+    // Updated to include optional statistics dictionary
+    public record ReportOutcomeRequest(
+        string ParticipantId, 
+        string Result, 
+        Dictionary<string, object>? Statistics = null);
 
     // DTO used by GetRoomResponse to expose participant details
     public record RoomParticipant(string Id, string Name, DateTime JoinedAtUtc);
