@@ -10,17 +10,25 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 
-// CORS: allow cross-origin requests (adjust origins as needed)
+// CORS: allow cross-origin requests with specific origins for SignalR
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
     {
         policy
-            .AllowAnyOrigin()
+            .WithOrigins(
+                "http://localhost:64496",  // Your React dev server
+                "http://localhost:3000",   // Common React port
+                "http://localhost:5173",   // Common Vite port
+                "https://localhost:7086",   // Your own backend (if needed)
+                "https://magicreactrandomizerapi.onrender.com:443"
+            )
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();  // Required for SignalR
     });
 });
+
 // Add Database Context - PostgreSQL
 builder.Services.AddDbContext<SessionDbContext>(options =>
 {
