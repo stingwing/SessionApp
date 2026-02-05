@@ -251,7 +251,6 @@ namespace SessionApp.Data
                 RoundNumber = entity.RoundNumber,
                 IsDraw = entity.IsDraw,
                 WinnerParticipantId = entity.WinnerParticipantId,
-                // Load new fields
                 StartedAtUtc = entity.StartedAtUtc,
                 CompletedAtUtc = entity.CompletedAtUtc
             };
@@ -259,14 +258,15 @@ namespace SessionApp.Data
             // Load statistics from JSON
             group.SetStatisticsFromJson(entity.StatisticsJson);
 
-            foreach (var p in entity.GroupParticipants)
+            // Use AddParticipant to maintain order from database
+            foreach (var p in entity.GroupParticipants.OrderBy(gp => gp.JoinedAtUtc))
             {
-                group.Participants[p.ParticipantId] = new Participant
+                group.AddParticipant(new Participant
                 {
                     Id = p.ParticipantId,
                     Name = p.Name,
                     JoinedAtUtc = p.JoinedAtUtc
-                };
+                });
             }
 
             return group;

@@ -4,6 +4,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -133,6 +134,9 @@ namespace SessionApp.Services
             if (session.IsExpiredUtc())
                 return "Session has expired";
 
+            if (session.IsGameEnded)
+                return "Game has ended";
+
             // Do not allow joining after a game has started
             if (session.IsGameStarted && !session.Settings.AllowJoinAfterStart)
                 return "Game Has Started";
@@ -192,7 +196,7 @@ namespace SessionApp.Services
                 using var scope = _serviceProvider.CreateScope();
                 var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
                 var dbSession = await repository.LoadSessionAsync(key);
-                if (dbSession != null && !dbSession.IsExpiredUtc())
+                if (dbSession != null )// && !dbSession.IsExpiredUtc())
                 {
                     _sessions[key] = dbSession;
                     return dbSession;
@@ -237,35 +241,34 @@ namespace SessionApp.Services
         /// The last group may contain fewer than 4 participants if the total is not divisible by 4.
         /// Returns the groups on success; returns null if session not found, expired, already started, or has no participants.
         /// </summary>
-        public IReadOnlyList<Group>? StartGame(string code, ref string errorMessage)
-        {
-            var session = RoundHandler(code, false, ref errorMessage);
-            if (session == null || session.Groups == null || errorMessage != string.Empty)
-                return null;
+        //public IReadOnlyList<Group>? StartGame(string code, ref string errorMessage)
+        //{
+        //    var session = RoundHandler(code, false, ref errorMessage);
+        //    if (session == null || session.Groups == null || errorMessage != string.Empty)
+        //        return null;
 
-            // Notify subscribers (SignalR hub can forward to clients)
-            GameStarted?.Invoke(session, session.Groups);
-            return session.Groups;
-        }
+        //    // Notify subscribers (SignalR hub can forward to clients)
+        //    GameStarted?.Invoke(session, session.Groups);
+        //    return session.Groups;
+        //}
 
         /// <summary>
         /// Starts a new round for an ongoing session (re-shuffles remaining participants and re-partitions groups).
         /// Returns the new groups on success; returns null if session not found, expired, not started, or there are no participants.
         /// Dropped participants have already been removed from session.Participants and therefore will not be included.
         /// </summary>
-        public IReadOnlyList<Group>? StartNewRound(string code, ref string errorMessage)
-        {
-            var session = RoundHandler(code, true, ref errorMessage);
+        //public IReadOnlyList<Group>? StartNewRound(string code, HandleRoundOptions task, Dictionary<string, object> playerGroup, ref string errorMessage)
+        //{
+        //    var session = RoundHandler(code, task, playerGroup, ref errorMessage);
 
-            if (session == null || session.Groups == null || errorMessage != string.Empty)
-                return null;
+        //    if (session == null || session.Groups == null || errorMessage != string.Empty)
+        //        return null;
 
-            // Notify subscribers that a new round started
-            NewRoundStarted?.Invoke(session, session.Groups);
-            return session.Groups;
-        }
-
-        private RoomSession? RoundHandler(string code, bool newRound,ref string errorMessage)
+        //    // Notify subscribers that a new round started
+        //    NewRoundStarted?.Invoke(session, session.Groups);
+        //    return session.Groups;
+        //}
+        public IReadOnlyList<Group>? HandleRound(string code, HandleRoundOptions task, Dictionary<string, object> playerGroup, ref string errorMessage)
         {
             if (string.IsNullOrWhiteSpace(code))
             {
@@ -274,27 +277,14 @@ namespace SessionApp.Services
             }
 
             var key = code.ToUpperInvariant();
-            if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
+            if (!_sessions.TryGetValue(key, out var session))
             {
                 errorMessage = "Code is Invalid or Expired";
                 return null;
             }
 
-            if (session.IsGameEnded)
-            {
-                errorMessage = "The Game has ended";
-                return null;
-            }
-
             lock (session)
             {
-                //// Only allow starting a new round for an already started session
-                //if (session.IsGameStarted && !newRound)
-                //{
-                //    errorMessage = "Game Has Already Started";
-                //    return null;
-                //}
-
                 var participants = session.Participants.Values.ToList();
                 if (!participants.Any())
                 {
@@ -302,22 +292,32 @@ namespace SessionApp.Services
                     return null;
                 }
 
-                if (participants.Count < 6) // add this back in later
+                if (participants.Count < 6)
                 {
                     errorMessage = $"At least 6 participants are required";
                     return null;
                 }
 
-                if (session.Groups != null && newRound)
+                // FIXED: Archive current round BEFORE generating the next one
+                // This ensures Round 1 is archived before Round 2 is created
+                if (session.Groups != null && session.Groups.Count > 0)
                 {
-                    var snapshot = SnapshotGroups(session.Groups);
-                    session.ArchivedRounds.Add(snapshot);                 
+                    // Check if we're starting a new round (not just regenerating the current one)
+                    if (task == HandleRoundOptions.GenerateRound || task == HandleRoundOptions.EndRound || task == HandleRoundOptions.EndGame)
+                    {
+                        var snapshotGroups = SnapshotGroups(session.Groups);
+                        session.ArchivedRounds.Add(snapshotGroups);
+                    }
                 }
 
-                if(session.CurrentRound == 0 || newRound)
-                    session.CurrentRound++;
+                // Increment round counter when generating a new round
+                if (task == HandleRoundOptions.GenerateRound || task == HandleRoundOptions.GenerateFirstRound)
+                {
+                    if (session.CurrentRound == 0 || task == HandleRoundOptions.GenerateRound)
+                        session.CurrentRound++;
+                }
 
-                var groups = RanzomizeRound(participants, session);
+                var groups = RanzomizeRound(participants, session, Array.Empty<Group>(), task);
 
                 session.Groups = Array.AsReadOnly(groups.ToArray());
                 session.IsGameStarted = true;
@@ -339,7 +339,9 @@ namespace SessionApp.Services
                         }
                     });
                 }
-                return session;
+
+                NewRoundStarted?.Invoke(session, session.Groups);
+                return session.Groups;
             }
         }
 
@@ -362,10 +364,10 @@ namespace SessionApp.Services
                     Statistics = new Dictionary<string, object>(g.Statistics) // Deep copy
                 };
 
-                // Copy participants (Participant is immutable-like — we can reuse the instances)
-                foreach (var p in g.Participants.Values)
+                // Copy participants using AddParticipant to preserve order
+                foreach (var p in g.ParticipantsOrdered)
                 {
-                    copy.Participants[p.Id] = p;
+                    copy.AddParticipant(p);
                 }
 
                 snapshot.Add(copy);
@@ -374,9 +376,8 @@ namespace SessionApp.Services
             return Array.AsReadOnly(snapshot.ToArray());
         }
 
-        private List<Group> RanzomizeRound(List<Participant> participants, RoomSession session)
+        private List<Group> RanzomizeRound(List<Participant> participants, RoomSession session, IReadOnlyList<Group> snapshotGroups, HandleRoundOptions task)
         {
-            var firstRound = false;
             var groups = new List<Group>();
             var (groupsOf4, groupsOf3) = CalculateNumberOfGroups(participants.Count);
 
@@ -394,29 +395,21 @@ namespace SessionApp.Services
                 ? session.ArchivedRounds[^1]
                 : null;
 
-            //Handle the first round
-            if (lastRound == null)
-                firstRound = true;
             
             // Build pairing history from all archived rounds
             var pairingHistory = BuildPairingHistory(session.ArchivedRounds);
 
+            // NEW: Build comprehensive group-of-3 history across ALL rounds
+            var groupOf3History = BuildGroupOf3History(session.ArchivedRounds, session.Settings.FurtherReduceOddsOfGroupOfThree);
+
             // Collect all winners from last round
             var allWinners = new List<Participant>();
-            var participantsInGroupOf3 = new HashSet<string>();
 
-            if (!firstRound && lastRound != null)
+            if (task != HandleRoundOptions.GenerateFirstRound && lastRound != null)
             {
-                // Build a set of all participant IDs from last round for quick lookup
+                // Track winners from last round only (for prioritization)
                 foreach (var group in lastRound)
                 {
-                    // Track participants who were in groups of 3
-                    if (group.Participants.Count == 3)
-                    {
-                        foreach (var p in group.Participants.Keys)
-                            participantsInGroupOf3.Add(p);
-                    }
-
                     // Track winners
                     if (!string.IsNullOrEmpty(group.WinnerParticipantId) && session.Settings.PrioitizeWinners)
                     {
@@ -440,6 +433,108 @@ namespace SessionApp.Services
                 regularParticipants.Add(participant);
             }
 
+            // Pass the comprehensive history instead of just last round
+            var remainingWinners = CreateWinnersGroups(allWinners, groups, session, regularParticipants, pairingHistory, groupOf3History);
+
+            // Combine priority, regular participants, and any leftover winners
+            var allRemaining = new List<Participant>();
+            allRemaining.AddRange(remainingWinners);
+            allRemaining.AddRange(regularParticipants);
+            ShuffleList(allRemaining);
+            
+            // Calculate how many more groups we need to create
+            var remainingGroupsOf4 = groupsOf4 - groups.Count;
+            var remainingGroupsOf3 = groupsOf3;
+
+            // Create groups of 4 based on calculated groupsOf4
+            for (int i = 0; i < remainingGroupsOf4 && allRemaining.Count >= 4; i++)
+            {
+                var groupMembers = new List<Participant>();
+
+                // Select 4 participants to minimize pairing repetition
+                // Pass the comprehensive history
+                var selected = SelectParticipantsMinimizingPairings(
+                    allRemaining, 
+                    new List<Participant>(), // Start with empty group
+                    4, // Select 4 participants
+                    pairingHistory, 
+                    groupOf3History);
+
+                // Add selected participants and remove them from available pool
+                foreach (var p in selected)
+                {
+                    groupMembers.Add(p);
+                    allRemaining.Remove(p);
+                }
+
+                var grp = new Group
+                {
+                    RoundNumber = session.CurrentRound,
+                    GroupNumber = groups.Count + 1,
+                    StartedAtUtc = DateTime.UtcNow
+                };
+
+                // Use AddParticipant to preserve selection order
+                foreach (var p in groupMembers)
+                    grp.AddParticipant(p);
+
+                groups.Add(grp);
+            }
+
+            // Create groups of 3 based on calculated groupsOf3 (only if AllowGroupOfThree is true)
+            if (session.Settings.AllowGroupOfThree)
+            {
+                for (int i = 0; i < remainingGroupsOf3 && allRemaining.Count >= 3; i++)
+                {
+                    var groupMembers = new List<Participant>();
+
+                    // Select 3 participants to minimize pairing repetition
+                    // Prioritize those who have NEVER been in a group of 3
+                    var selected = SelectParticipantsMinimizingPairings(
+                        allRemaining, 
+                        new List<Participant>(), // Start with empty group
+                        3, // Select 3 participants
+                        pairingHistory, 
+                        groupOf3History);
+
+                    // Add selected participants and remove them from available pool
+                    foreach (var p in selected)
+                    {
+                        groupMembers.Add(p);
+                        allRemaining.Remove(p);
+                    }
+
+                    var grp = new Group
+                    {
+                        RoundNumber = session.CurrentRound,
+                        GroupNumber = groups.Count + 1,
+                        StartedAtUtc = DateTime.UtcNow
+                    };
+
+                    // Use AddParticipant to preserve selection order
+                    foreach (var p in groupMembers)
+                        grp.AddParticipant(p);
+
+                    groups.Add(grp);
+                }
+            }
+
+            // If AllowGroupOfThree is false, remaining participants are skipped
+            // If AllowGroupOfThree is true, distribute any remaining participants to existing groups
+            if (session.Settings.AllowGroupOfThree && allRemaining.Count > 0 && groups.Count > 0)
+            {
+                ShuffleList(allRemaining);
+                foreach (var p in allRemaining)
+                {
+                    groups[^1].AddParticipant(p);
+                }
+            }
+
+            return groups;
+        }
+
+        private List<Participant> CreateWinnersGroups(List<Participant> allWinners, List<Group> groups, RoomSession session, List<Participant> regularParticipants, Dictionary<string, int> pairingHistory, Dictionary<string, int> groupOf3History)
+        {
             // Calculate how many winner groups we can create (one group per 4 winners)
             var winnerGroupCount = allWinners.Count / 4;
             var remainingWinners = new List<Participant>();
@@ -447,6 +542,8 @@ namespace SessionApp.Services
             // Create winner groups (full groups of 4)
             for (var i = 0; i < winnerGroupCount; i++)
             {
+                ShuffleList(allWinners);
+
                 var winnersForGroup = allWinners.Skip(i * 4).Take(4).ToList();
 
                 // If we have exactly 4, create the group
@@ -460,8 +557,9 @@ namespace SessionApp.Services
                         GroupNumber = groups.Count + 1
                     };
 
+                    // Use AddParticipant to preserve shuffled order
                     foreach (var p in winnersForGroup)
-                        winnersGroup.Participants[p.Id] = p;
+                        winnersGroup.AddParticipant(p);
 
                     groups.Add(winnersGroup);
                 }
@@ -487,7 +585,9 @@ namespace SessionApp.Services
                     var needed = Math.Min(4 - remainingWinners.Count, regularParticipants.Count);
                     if (needed > 0)
                     {
-                        var selected = SelectParticipantsMinimizingPairings(regularParticipants, remainingWinners, needed, pairingHistory, participantsInGroupOf3);
+                        // Pass comprehensive history
+                        var selected = SelectParticipantsMinimizingPairings(regularParticipants, remainingWinners, needed, pairingHistory, groupOf3History);
+
                         remainingWinners.AddRange(selected);
                         foreach (var p in selected)
                             regularParticipants.Remove(p);
@@ -505,119 +605,37 @@ namespace SessionApp.Services
                         GroupNumber = groups.Count + 1
                     };
 
+                    // Use AddParticipant to preserve shuffled order
                     foreach (var p in remainingWinners)
-                        winnersGroup.Participants[p.Id] = p;
+                        winnersGroup.AddParticipant(p);
 
                     groups.Add(winnersGroup);
                     remainingWinners.Clear();
                 }
             }
 
-            // Combine priority, regular participants, and any leftover winners
-            var allRemaining = new List<Participant>();
-            allRemaining.AddRange(remainingWinners);
-            //   allRemaining.AddRange(priorityNonWinners);
-            allRemaining.AddRange(regularParticipants);
-            ShuffleList(allRemaining);
-            // Calculate how many more groups we need to create
-            var remainingGroupsOf4 = groupsOf4 - groups.Count;
-            var remainingGroupsOf3 = groupsOf3;
-
-            // Create groups of 4 based on calculated groupsOf4
-            for (int i = 0; i < remainingGroupsOf4 && allRemaining.Count >= 4; i++)
-            {
-                var groupMembers = new List<Participant>();
-
-                // Select first participant randomly
-                var firstIndex = RandomNumberGenerator.GetInt32(allRemaining.Count);
-                groupMembers.Add(allRemaining[firstIndex]);
-                allRemaining.RemoveAt(firstIndex);
-
-                // Select remaining 3 participants to minimize pairing repetition
-                for (int j = 1; j < 4 && allRemaining.Count > 0; j++)
-                {
-                    var selected = SelectParticipantsMinimizingPairings(allRemaining, groupMembers, 1, pairingHistory, participantsInGroupOf3);
-                    if (selected.Count > 0)
-                    {
-                        groupMembers.Add(selected[0]);
-                        allRemaining.Remove(selected[0]);
-                    }
-                }
-
-                var grp = new Group
-                {
-                    RoundNumber = session.CurrentRound,
-                    GroupNumber = groups.Count + 1,
-                    StartedAtUtc = DateTime.UtcNow
-                };
-
-                foreach (var p in groupMembers)
-                    grp.Participants[p.Id] = p;
-
-                groups.Add(grp);
-            }
-
-            // Create groups of 3 based on calculated groupsOf3 (only if AllowGroupOfThree is true)
-            if (session.Settings.AllowGroupOfThree)
-            {
-                for (int i = 0; i < remainingGroupsOf3 && allRemaining.Count >= 3; i++)
-                {
-                    var groupMembers = new List<Participant>();
-
-                    // Select first participant randomly
-                    var firstIndex = RandomNumberGenerator.GetInt32(allRemaining.Count);
-                    groupMembers.Add(allRemaining[firstIndex]);
-                    allRemaining.RemoveAt(firstIndex);
-
-                    // Select remaining 2 participants to minimize pairing repetition
-                    for (int j = 1; j < 3 && allRemaining.Count > 0; j++)
-                    {
-                        var selected = SelectParticipantsMinimizingPairings(allRemaining, groupMembers, 1, pairingHistory, participantsInGroupOf3);
-                        if (selected.Count > 0)
-                        {
-                            groupMembers.Add(selected[0]);
-                            allRemaining.Remove(selected[0]);
-                        }
-                    }
-
-                    var grp = new Group
-                    {
-                        RoundNumber = session.CurrentRound,
-                        GroupNumber = groups.Count + 1,
-                        StartedAtUtc = DateTime.UtcNow
-                    };
-
-                    foreach (var p in groupMembers)
-                        grp.Participants[p.Id] = p;
-
-                    groups.Add(grp);
-                }
-            }
-
-            // If AllowGroupOfThree is false, remaining participants are skipped
-            // If AllowGroupOfThree is true, distribute any remaining participants to existing groups
-            if (session.Settings.AllowGroupOfThree && allRemaining.Count > 0 && groups.Count > 0)
-            {
-                ShuffleList(allRemaining);
-                foreach (var p in allRemaining)
-                {
-                    groups[^1].Participants[p.Id] = p;
-                }
-            }
-
-            return groups;
+            return remainingWinners;
         }
 
-        private List<Participant> SelectParticipantsMinimizingPairings(List<Participant> availableParticipants, List<Participant> existingGroupMembers, int count, Dictionary<string, int> pairingHistory, HashSet<string> participantsInGroupOf3)
+        /// <summary>
+        /// Selects participants to minimize repeat pairings using weighted random selection.
+        /// Returns the specified count of participants, or fewer if not enough are available.
+        /// Does NOT modify the availableParticipants list - caller must handle removal.
+        /// </summary>
+        private List<Participant> SelectParticipantsMinimizingPairings(List<Participant> availableParticipants, List<Participant> existingGroupMembers, int count, Dictionary<string, int> pairingHistory, Dictionary<string, int> groupOf3History)
         {
             var selected = new List<Participant>();
 
-            for (int i = 0; i < count && availableParticipants.Count > 0; i++)
+            // Create a working copy so we don't modify the original list
+            var workingList = new List<Participant>(availableParticipants);
+
+            // Select up to 'count' participants
+            for (int i = 0; i < count && workingList.Count > 0; i++)
             {
                 // Calculate pairing scores for each available participant
                 var scores = new Dictionary<Participant, int>();
 
-                foreach (var participant in availableParticipants)
+                foreach (var participant in workingList)
                 {
                     int totalPairings = 0;
 
@@ -628,10 +646,21 @@ namespace SessionApp.Services
                         totalPairings += pairingHistory.GetValueOrDefault(pairKey);
                     }
 
-                    // Also count pairings with already-selected participants in this iteration
+                    // Count pairings with already-selected participants in this iteration
                     foreach (var selectedMember in selected)
                     {
                         var pairKey = GetPairKey(participant.Id, selectedMember.Id);
+                        totalPairings += pairingHistory.GetValueOrDefault(pairKey);
+                    }
+
+                    // NEW: Count pairings with other candidates in the working list
+                    // This ensures we minimize repeat pairings even on the first selection
+                    foreach (var otherCandidate in workingList)
+                    {
+                        if (otherCandidate.Id == participant.Id)
+                            continue; // Don't count pairing with self
+
+                        var pairKey = GetPairKey(participant.Id, otherCandidate.Id);
                         totalPairings += pairingHistory.GetValueOrDefault(pairKey);
                     }
 
@@ -639,16 +668,91 @@ namespace SessionApp.Services
                 }
 
                 // Use weighted random selection favoring participants with fewer pairings
-                var selectedParticipant = WeightedRandomSelectionByPairingScore(availableParticipants, scores, participantsInGroupOf3);
+                // and fewer group-of-3 occurrences
+                var selectedParticipant = WeightedRandomSelectionByPairingScore(workingList, scores, groupOf3History);
+
                 selected.Add(selectedParticipant);
 
-                // Don't remove from availableParticipants here - let caller handle it
-                // This allows the method to work correctly when called multiple times
+                // Remove from working list to prevent selecting the same participant twice
+                workingList.Remove(selectedParticipant);
             }
 
             return selected;
         }
 
+        /// <summary>
+        /// Selects a participant using weighted random selection where lower pairing scores have higher probability.
+        /// Participants with no previous pairings have the highest chance of selection.
+        /// Participants who were in groups of 3 receive a bonus weight multiplier to help balance group sizes.
+        /// </summary>
+        private Participant WeightedRandomSelectionByPairingScore(List<Participant> participants, Dictionary<Participant, int> pairingScores, Dictionary<string, int> groupOf3History)
+        {
+            // Edge case: if only one participant, return immediately
+            if (participants.Count == 1)
+                return participants[0];
+
+            var weights = new Dictionary<Participant, double>();
+
+            // Find min and max scores for normalization
+            int minScore = pairingScores.Values.Min();
+            int maxScore = pairingScores.Values.Max();
+            int scoreRange = maxScore - minScore;
+
+            foreach (var participant in participants)
+            {
+                int score = pairingScores[participant];
+
+                // Use exponential decay for weights to create stronger differentiation
+                double baseWeight;
+                if (scoreRange == 0)
+                {
+                    // All scores are the same, use equal weights
+                    baseWeight = 1.0;
+                }
+                else
+                {
+                    // Exponential decay: weight = 2^(-score)
+                    baseWeight = Math.Pow(2, -score);
+                }
+
+                // Apply PROGRESSIVE BONUS based on group-of-3 history
+                // The more times they've been in a group of 3, the HIGHER their weight for being selected for groups of 4
+                // This compensates for the disadvantage of being in smaller groups
+                int groupOf3Count = groupOf3History.GetValueOrDefault(participant.Id);
+
+                double groupOf3Multiplier = groupOf3Count switch
+                {
+                    0 => 1.0,     // Never in group of 3 - neutral
+                    1 => 2.0,     // Been in 1 group of 3 - 2x bonus
+                    2 => 4.0,     // Been in 2 groups of 3 - 4x bonus
+                    3 => 8.0,     // Been in 3 groups of 3 - 8x bonus (exponential)
+                    4 => 16.0,    // Been in 4 groups of 3 - 16x bonus
+                    _ => 32.0     // Been in 5+ groups of 3 - 32x bonus (very strong)
+                };
+
+                weights[participant] = baseWeight * groupOf3Multiplier;
+            }
+
+            // Calculate total weight
+            double totalWeight = weights.Values.Sum();
+
+            // Generate random number between 0 and totalWeight
+            double randomValue = RandomNumberGenerator.GetInt32(int.MaxValue) / (double)int.MaxValue * totalWeight;
+
+            // Select participant based on cumulative weight
+            double cumulativeWeight = 0.0;
+            foreach (var participant in participants)
+            {
+                cumulativeWeight += weights[participant];
+                if (randomValue <= cumulativeWeight)
+                {
+                    return participant;
+                }
+            }
+
+            // Fallback
+            return participants[^1];
+        }
         /// <summary>
         /// Builds a dictionary tracking how many times each pair of participants have played together.
         /// Key format: "participantId1|participantId2" (lexicographically sorted to ensure consistency)
@@ -677,6 +781,36 @@ namespace SessionApp.Services
             }
 
             return pairingCounts;
+        }
+
+        /// <summary>
+        /// Builds a dictionary tracking how many times each participant has been in a group of 3.
+        /// Key: participantId
+        /// Value: number of times they've been in a group of 3 across all archived rounds
+        /// </summary>
+        private Dictionary<string, int> BuildGroupOf3History(List<IReadOnlyList<Group>> archivedRounds, bool FurtherReduceOddsOfGroupOfThree)
+        {
+            var groupOf3Counts = new Dictionary<string, int>();
+
+            foreach (var round in archivedRounds)
+            {
+                foreach (var group in round)
+                {
+                    // Only count groups with exactly 3 participants
+                    if (group.Participants.Count == 3)
+                    {
+                        foreach (var participantId in group.Participants.Keys)
+                        {
+                            groupOf3Counts[participantId] = groupOf3Counts.GetValueOrDefault(participantId) + 1;
+                            
+                            if(FurtherReduceOddsOfGroupOfThree)
+                                groupOf3Counts[participantId] = groupOf3Counts.GetValueOrDefault(participantId) + 3;
+                        }
+                    }
+                }
+            }
+
+            return groupOf3Counts;
         }
 
         /// <summary>
@@ -722,61 +856,6 @@ namespace SessionApp.Services
 
             return (g4, g3);
         }
-
-        /// <summary>
-        /// Selects a participant using weighted random selection where lower pairing scores have higher probability.
-        /// Participants with no previous pairings have the highest chance of selection.
-        /// Participants who were in groups of 3 receive a 2x weight multiplier.
-        /// </summary>
-        private Participant WeightedRandomSelectionByPairingScore(
-            List<Participant> participants,
-            Dictionary<Participant, int> pairingScores,
-            HashSet<string> participantsInGroupOf3)
-        {
-            // Convert pairing scores to weights (inverse relationship)
-            // Score of 0 = weight of 10, score of 1 = weight of 5, score of 2+ = weight of 1
-            var weights = new Dictionary<Participant, int>();
-
-            foreach (var participant in participants)
-            {
-                int score = pairingScores[participant];
-                int baseWeight = score switch
-                {
-                    0 => 4,  // Never played together - highest priority
-                    1 => 3,   // Played once - medium priority
-                    2 => 2,   // Played twice - low priority
-                    _ => 1    // Played 3+ times - lowest priority
-                };
-
-                // Apply 2x multiplier for participants who were in groups of 3
-                if (participantsInGroupOf3.Contains(participant.Id))
-                {
-                    baseWeight *= 3;
-                }
-
-                weights[participant] = baseWeight;
-            }
-
-            // Calculate total weight
-            int totalWeight = weights.Values.Sum();
-
-            // Generate random number between 0 and totalWeight
-            int randomValue = RandomNumberGenerator.GetInt32(totalWeight);
-
-            // Select participant based on cumulative weight
-            int cumulativeWeight = 0;
-            foreach (var participant in participants)
-            {
-                cumulativeWeight += weights[participant];
-                if (randomValue < cumulativeWeight)
-                {
-                    return participant;
-                }
-            }
-
-            // Fallback (should never reach here)
-            return participants[^1];
-        }
      
         private string GenerateCode(int length)
         {
@@ -801,6 +880,18 @@ namespace SessionApp.Services
             Draw,
             DropOut,
             DataOnly // Add this new type for statistics-only updates
+        }
+
+        public enum HandleRoundOptions
+        {
+            Invalid,
+            GenerateRound,
+            GenerateFirstRound,
+            RegenerateRound,
+            StartRound,
+            CreateGroup,
+            EndRound,
+            EndGame,
         }
 
         public enum ReportOutcomeResult
@@ -846,8 +937,11 @@ namespace SessionApp.Services
 
             lock (session)
             {
-                if (!session.IsGameStarted || session.Groups is null)
-                    return ReportOutcomeResult.NotStarted;
+                //if (!session.IsGameStarted || session.Groups is null)
+                //    return ReportOutcomeResult.NotStarted;
+
+              //  if(session.IsGameEnded)
+             //       return ReportOutcomeResult.AlreadyEnded;
 
                 // Handle DropOut (remove from active participants)
                 if (outcome == ReportOutcomeType.DropOut)
@@ -910,7 +1004,7 @@ namespace SessionApp.Services
                 if (outcome == ReportOutcomeType.DataOnly)
                 {
                     // Save to database (fire and forget)
-                    if (_serviceProvider != null)
+                    if (_serviceProvider != null )
                     {
                         _ = Task.Run(async () =>
                         {

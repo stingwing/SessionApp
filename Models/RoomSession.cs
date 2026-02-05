@@ -56,8 +56,11 @@ namespace SessionApp.Models
         public bool AllowJoinAfterStart { get; set; } = true;
         public bool PrioitizeWinners { get; set; } = true;
         public bool AllowGroupOfThree { get; set; } = true;
+        public bool FurtherReduceOddsOfGroupOfThree { get; set; } = false;
         public bool AllowGroupOfFive { get; set; } = false;
         public TimeSpan RoundLength { get; set; } = TimeSpan.FromMinutes(90);
+
+
         /// <summary>
         /// Maximum group size used when partitioning participants. Supported values: 3 or 4.
         /// Default is 4.
@@ -85,8 +88,31 @@ namespace SessionApp.Models
     public class Group
     {
         public int GroupNumber { get; set; }
-        // Participants keyed by participant id
-        public ConcurrentDictionary<string, Participant> Participants { get; } = new();
+        
+        // Use a List to preserve order + dictionary for fast lookup
+        private List<Participant> _participantsList = new();
+        private ConcurrentDictionary<string, Participant> _participantsDict = new();
+        
+        public IReadOnlyList<Participant> ParticipantsOrdered => _participantsList.AsReadOnly();
+        public ConcurrentDictionary<string, Participant> Participants => _participantsDict;
+
+        public void AddParticipant(Participant participant)
+        {
+            if (_participantsDict.TryAdd(participant.Id, participant))
+            {
+                _participantsList.Add(participant);
+            }
+        }
+
+        public bool RemoveParticipant(string participantId)
+        {
+            if (_participantsDict.TryRemove(participantId, out var participant))
+            {
+                _participantsList.Remove(participant);
+                return true;
+            }
+            return false;
+        }
 
         // Round number this group belongs to
         public int RoundNumber { get; set; }
@@ -96,6 +122,10 @@ namespace SessionApp.Models
 
         // If non-null the participant id of the winner for this group.
         public string? WinnerParticipantId { get; set; }
+
+        // Indicates whether the round has been started
+        public bool RoundStarted { get; set; }
+
         // Fixed statistics for queryability
         public DateTime? StartedAtUtc { get; set; }
         public DateTime? CompletedAtUtc { get; set; }

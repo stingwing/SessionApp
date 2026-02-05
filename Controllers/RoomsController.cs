@@ -94,7 +94,7 @@ namespace SessionApp.Controllers
                 {
                     GroupNumber = g.GroupNumber,
                     Round = g.RoundNumber,
-                    Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                    Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
                     Result = g.HasResult,
                     Winner = g.WinnerParticipantId,
                     Draw = g.IsDraw,
@@ -109,7 +109,7 @@ namespace SessionApp.Controllers
                     {
                         GroupNumber = g.GroupNumber,
                         Round = g.RoundNumber,
-                        Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                        Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
                         Result = g.HasResult,
                         Winner = g.WinnerParticipantId,
                         Draw = g.IsDraw,
@@ -148,6 +148,12 @@ namespace SessionApp.Controllers
             if (!string.Equals(session.HostId, request.HostId, StringComparison.Ordinal))
                 return Forbid();
 
+            if(session.IsGameEnded || session.IsExpiredUtc())
+                return NotFound(new { message = "Game has ended" });
+
+            if(session.IsGameStarted)
+                return NotFound(new { message = "You can't change settings after starting the game" });
+
             lock (session)
             {
                 // Add settings here
@@ -165,63 +171,101 @@ namespace SessionApp.Controllers
             return Ok(session.Settings);
         }
 
-        // New GET endpoint that starts the game for a room and notifies connected clients.
-        // Note: this endpoint performs a state change (starts the game) and therefore returns 404 when it cannot start.
-        [HttpGet("{code}/start")]
-        public async Task<IActionResult> StartGame(string code)
+        // POST api/rooms/{code}/handlegame
+        // Handle game-specific actions with player data
+        [HttpPost("{code}/handlegame")]
+        public async Task<IActionResult> HandleGame(string code, [FromBody] HandleGameRequest request)
         {
             var errorMessage = string.Empty;
-            var groups = _roomService.StartGame(code, ref errorMessage);
+            if (string.IsNullOrWhiteSpace(code) || request is null)
+                return BadRequest(new { message = "code and request body are required" });
 
-            if (groups is null)
-                return NotFound(new { message = $"Error: {errorMessage}" });
+            if (string.IsNullOrWhiteSpace(request.HostId))
+                return BadRequest(new { message = "HostId is handle the round" });
 
-            var round = -1;
-            var testGroup = groups.FirstOrDefault();
-            if (groups.Any() && testGroup != null)
-                round = testGroup.RoundNumber;
+            var session = await _roomService.GetSessionAsync(code);
+            if (session is null)
+                return NotFound(new { message = "Room not found or expired" });
 
-            var payload = new
+            // Only host may end the session
+            if (!string.Equals(session.HostId, request.HostId, StringComparison.Ordinal))
+                return Forbid();
+
+            var playerGroup = request.Players;
+
+            var normalized = request.Result.Trim().ToLowerInvariant();
+            var task = normalized switch
             {
-                RoomCode = code.ToUpperInvariant(),
-                Round = round,
-                Groups = groups.Select(g => g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray(),
-
+                "generate" => HandleRoundOptions.GenerateRound,
+                "generatefirst" => HandleRoundOptions.GenerateFirstRound,
+                "regenerate" => HandleRoundOptions.RegenerateRound,
+                "start" => HandleRoundOptions.StartRound,
+                "group" => HandleRoundOptions.CreateGroup,
+                "endround" => HandleRoundOptions.EndRound,
+                "endgame" => HandleRoundOptions.EndGame,
+                _ => HandleRoundOptions.Invalid,
             };
 
-            // Broadcast the GameStarted event to clients in the room group
-            await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("GameStarted", payload);
-
-            return Ok(payload);
-        }
-
-        // POST api/rooms/{code}/round/start
-        // Start a new round for an already-started session (re-shuffles remaining participants and re-partitions groups).
-        [HttpGet("{code}/newround")]
-        public async Task<IActionResult> StartNewRound(string code)
-        {   
-            var errorMessage = string.Empty;
-
-            var groups = _roomService.StartNewRound(code, ref errorMessage);
-            if (groups is null)
-                return NotFound(new { message = $"Error: {errorMessage}" });
-
-            var round = -1;
-            var testGroup = groups.FirstOrDefault();
-            if (groups.Any() && testGroup != null)
-                round = testGroup.RoundNumber;
-
-            var payload = new
+            if (task == HandleRoundOptions.StartRound)
             {
-                RoomCode = code.ToUpperInvariant(),
-                Round = round,
-                Groups = groups.Select(g => g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray()
-            };
+                if (session.Groups is null || session.Groups.Count == 0)
+                    return BadRequest(new { message = "No groups available to start" });
 
-            // Broadcast the RoundStarted event to clients in the room group
-            await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("RoundStarted", payload);
+                lock (session)
+                {
+                    var currentTime = DateTime.UtcNow;
+                    foreach (var group in session.Groups)
+                    {
+                        group.RoundStarted = true;
+                        group.StartedAtUtc = currentTime;
+                    }
+                }
 
-            return Ok(payload);
+                var payload = new
+                {
+                    RoomCode = code.ToUpperInvariant(),
+                    Round = session.CurrentRound,
+                    StartedAtUtc = DateTime.UtcNow,
+                    RoundLength = session.Settings.RoundLength,
+                    Groups = session.Groups.Select(g => new
+                    {
+                        g.GroupNumber,
+                        g.RoundNumber,
+                        g.RoundStarted,
+                        g.StartedAtUtc,
+                        Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()
+                    }).ToArray()
+                };
+
+                await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("RoundStarted", payload);
+                return Ok(payload);
+            }
+
+            //Handle Round
+            if (task == HandleRoundOptions.GenerateRound || task == HandleRoundOptions.GenerateFirstRound || task == HandleRoundOptions.RegenerateRound)
+            {
+                var groups = _roomService.HandleRound(code, task, playerGroup, ref errorMessage);
+                if (groups is null)
+                    return NotFound(new { message = $"Error: {errorMessage}" });
+
+                var round = -1;
+                var testGroup = groups.FirstOrDefault();
+                if (groups.Any() && testGroup != null)
+                    round = testGroup.RoundNumber;
+
+                var payload = new
+                {
+                    RoomCode = code.ToUpperInvariant(),
+                    Round = round,
+                    Groups = groups.Select(g => g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray()
+                };
+
+                // Broadcast game update to clients in the room group
+                await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("RoundGenerated", payload);
+                return Ok(payload);
+            }
+
+            return BadRequest(new { message = "Invalid" });
         }
 
         // GET api/rooms/{code}/current
@@ -246,7 +290,7 @@ namespace SessionApp.Controllers
             {
                 GroupNumber = g.GroupNumber,
                 Round = g.RoundNumber,
-                Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
                 Result = g.HasResult,
                 Winner = g.WinnerParticipantId,
                 Draw = g.IsDraw,
@@ -260,7 +304,7 @@ namespace SessionApp.Controllers
         // GET api/rooms/{code}/group/{participantId}
         // Returns which group the specified participant is in after the game has started.
         [HttpGet("{code}/group/{participantId}")]
-        public async Task<IActionResult> GetParticipantGroup(string code, string participantId )
+        public async Task<IActionResult> GetParticipantGroup(string code, string participantId)
         {
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(participantId))
                 return BadRequest(new { message = "code and participantId are required" });
@@ -277,7 +321,7 @@ namespace SessionApp.Controllers
             {
                 if (group.Participants.ContainsKey(participantId))
                 {
-                    var members = group.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray();
+                    var members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray();
                     var result = new
                     {
                         RoomCode = session.Code,
@@ -318,7 +362,7 @@ namespace SessionApp.Controllers
                 {
                     GroupNumber = g.GroupNumber,
                     Round = g.RoundNumber,
-                    Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
+                    Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
                     Result = g.HasResult,
                     Winner = g.WinnerParticipantId,
                     Draw = g.IsDraw,
@@ -381,53 +425,6 @@ namespace SessionApp.Controllers
             };
         }
 
-        // POST api/rooms/{code}/end
-        // Host calls this to end the current session: archives the current groups (current round),
-        // marks the session ended and broadcasts a SessionEnded event with per-group results.
-        [HttpPost("{code}/end")]
-        public async Task<IActionResult> EndSession(string code, [FromBody] EndSessionRequest request) // change this
-        {
-            if (string.IsNullOrWhiteSpace(code) || request is null)
-                return BadRequest(new { message = "code and request body are required" });
-
-            if (string.IsNullOrWhiteSpace(request.HostId))
-                return BadRequest(new { message = "HostId is required to end session" });
-
-            var session = await _roomService.GetSessionAsync(code);
-            if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
-
-            // Only host may end the session
-            if (!string.Equals(session.HostId, request.HostId, StringComparison.Ordinal))
-                return Forbid();
-
-            _roomService.CleanupExpiredSession(code);
-
-            // Prepare result payload to broadcast/return
-            var resultGroups = (session.Groups ?? Array.Empty<Group>()).Select(g => new
-            {
-                GroupNumber = g.GroupNumber,
-                Round = g.RoundNumber,
-                Members = g.Participants.Values.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
-                Result = g.HasResult,
-                Winner = g.WinnerParticipantId,
-                Draw = g.IsDraw
-            }).ToArray();
-
-            var payload = new
-            {
-                RoomCode = session.Code,
-                Round = session.CurrentRound,
-                Groups = resultGroups,
-                ArchivedRoundsCount = session.ArchivedRounds.Count
-            };
-
-            // Broadcast final session results
-            await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("SessionEnded", payload);
-
-            return Ok(payload);
-        }
-
         private async Task<IActionResult> HandleGroupEndedBroadcast(string code, string result, string? winnerId, int? groupIndex)
         {
             var session = await _roomService.GetSessionAsync(code);
@@ -437,7 +434,7 @@ namespace SessionApp.Controllers
             if (!groupIndex.HasValue || session.Groups is null || groupIndex < 0 || groupIndex >= session.Groups.Count)
                 return BadRequest(new { message = "Invalid group index" });
 
-            var members = session.Groups[groupIndex.Value].Participants.Values
+            var members = session.Groups[groupIndex.Value].ParticipantsOrdered
                 .Select(p => new { p.Id, p.Name, p.JoinedAtUtc })
                 .ToArray();
 
@@ -492,4 +489,10 @@ namespace SessionApp.Controllers
 
     // Request DTO to end a session. HostId required for authorization.
     public record EndSessionRequest(string HostId);
+
+    // Request DTO for handling game with player list
+    public record HandleGameRequest(
+        string Result, 
+        string HostId, 
+        Dictionary<string, object> Players);
 }
