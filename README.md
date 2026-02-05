@@ -1,5 +1,2 @@
-Todo
-
-Add an option to bulk add players who dont want to use the app.
-Add capture data with reporting options.
-Add Randomizer logic
+Api backend for https://github.com/stingwing/magic-randomizer
+The backend is desinged to store players, randomize pods and save data 
