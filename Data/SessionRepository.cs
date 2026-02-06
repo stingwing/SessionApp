@@ -104,24 +104,23 @@ namespace SessionApp.Data
 
         private async Task SaveGroupsAsync(string sessionCode, IReadOnlyList<Group> groups, bool isArchived, Guid? archivedRoundId = null)
         {
-            // Remove existing active groups if not archived
             if (!isArchived)
             {
                 var existingGroups = await _context.Groups
                     .Where(g => g.SessionCode == sessionCode && !g.IsArchived)
                     .Include(g => g.GroupParticipants)
                     .ToListAsync();
-                
-                // Remove group participants first
+
                 foreach (var existingGroup in existingGroups)
                 {
                     _context.GroupParticipants.RemoveRange(existingGroup.GroupParticipants);
                 }
-                
+
                 _context.Groups.RemoveRange(existingGroups);
-                await _context.SaveChangesAsync();
             }
 
+            // Add all groups first
+            var groupEntities = new List<GroupEntity>();
             foreach (var group in groups)
             {
                 var groupEntity = new GroupEntity
@@ -141,7 +140,17 @@ namespace SessionApp.Data
                 };
 
                 _context.Groups.Add(groupEntity);
-                await _context.SaveChangesAsync(); // Save to get groupEntity.Id
+                groupEntities.Add(groupEntity);
+            }
+
+            // Save once to get IDs for all groups
+            await _context.SaveChangesAsync();
+
+            // Now add all group participants
+            for (int i = 0; i < groups.Count; i++)
+            {
+                var group = groups[i];
+                var groupEntity = groupEntities[i];
 
                 foreach (var participant in group.ParticipantsOrdered)
                 {
@@ -154,6 +163,9 @@ namespace SessionApp.Data
                     });
                 }
             }
+
+            // Final save for all participants
+            await _context.SaveChangesAsync();
         }
 
         private async Task SaveArchivedRoundsAsync(RoomSession session)
@@ -232,6 +244,11 @@ namespace SessionApp.Data
             if (entity == null)
                 return null;
 
+            return MapEntityToSession(entity);
+        }
+
+        private RoomSession MapEntityToSession(SessionEntity entity)
+        {
             var session = new RoomSession
             {
                 Code = entity.Code,
@@ -346,12 +363,16 @@ namespace SessionApp.Data
                 .Include(s => s.Participants)
                 .Include(s => s.Groups.Where(g => !g.IsArchived))
                     .ThenInclude(g => g.GroupParticipants)
+                .Include(s => s.ArchivedRounds)
+                    .ThenInclude(a => a.Groups)
+                        .ThenInclude(g => g.GroupParticipants)
                 .ToListAsync();
 
             var sessions = new List<RoomSession>();
             foreach (var entity in entities)
             {
-                var session = await LoadSessionAsync(entity.Code);
+                // Map directly from already-loaded entity instead of calling LoadSessionAsync
+                var session = MapEntityToSession(entity);
                 if (session != null)
                     sessions.Add(session);
             }
@@ -365,12 +386,16 @@ namespace SessionApp.Data
                 .Include(s => s.Participants)
                 .Include(s => s.Groups.Where(g => !g.IsArchived))
                     .ThenInclude(g => g.GroupParticipants)
+                .Include(s => s.ArchivedRounds)
+                    .ThenInclude(a => a.Groups)
+                        .ThenInclude(g => g.GroupParticipants)
                 .ToListAsync();
 
             var sessions = new List<RoomSession>();
             foreach (var entity in entities)
             {
-                var session = await LoadSessionAsync(entity.Code);
+                // Map directly from already-loaded entity instead of calling LoadSessionAsync
+                var session = MapEntityToSession(entity);
                 if (session != null)
                     sessions.Add(session);
             }

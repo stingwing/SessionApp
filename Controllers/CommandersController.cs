@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using SessionApp.Data;
 using SessionApp.Services;
@@ -9,6 +10,7 @@ namespace SessionApp.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [EnableRateLimiting("api")] // Apply default API rate limiting to all endpoints
     public class CommandersController : ControllerBase
     {
         private readonly ScryfallService _scryfallService;
@@ -22,6 +24,7 @@ namespace SessionApp.Controllers
 
         // GET api/commanders/search?query=atraxa&format=commander
         [HttpGet("search")]
+        [EnableRateLimiting("search")] // Override with search-specific rate limiting
         public async Task<IActionResult> SearchCommanders([FromQuery] string? query, [FromQuery] string? format, [FromQuery] int limit = 20)
         {
             if (string.IsNullOrWhiteSpace(query))
@@ -85,6 +88,7 @@ namespace SessionApp.Controllers
 
         // POST api/commanders/sync
         [HttpPost("sync")]
+        [EnableRateLimiting("sync")] // Very strict - only 1 concurrent request per IP
         public async Task<IActionResult> SyncCommanders()
         {
             var count = await _scryfallService.FetchAndStoreCommandersAsync();
