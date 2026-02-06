@@ -134,7 +134,7 @@ builder.Services.AddRateLimiter(options =>
         {
             error = "Too many requests",
             message = "Rate limit exceeded. Please try again later.",
-            retryAfter = (double?)retryAfter.TotalSeconds
+            retryAfter = retryAfter?.TotalSeconds
         }, cancellationToken: cancellationToken);
     };
 });
@@ -145,7 +145,11 @@ builder.Services.AddDbContext<SessionDbContext>(options =>
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
     
     if (string.IsNullOrEmpty(connectionString))
-        throw new InvalidOperationException("Database connection string not configured");
+    {
+        throw new InvalidOperationException(
+            "Database connection string 'DefaultConnection' not found. " +
+            "Please configure it using User Secrets (development) or Environment Variables (production).");
+    }
     
     options.UseNpgsql(connectionString, npgsqlOptions =>
     {
@@ -153,7 +157,12 @@ builder.Services.AddDbContext<SessionDbContext>(options =>
             maxRetryCount: 5,
             maxRetryDelay: TimeSpan.FromSeconds(10),
             errorCodesToAdd: null);
+        npgsqlOptions.CommandTimeout(30);
     });
+    
+    // Don't log sensitive data in production
+    options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
+    options.EnableDetailedErrors(builder.Environment.IsDevelopment());
 });
 
 // Register repository  
@@ -189,11 +198,29 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
-// Create database and apply migrations
+// Create database and apply migrations with better error handling
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<SessionDbContext>();
-    await db.Database.MigrateAsync();
+    try
+    {
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        var db = scope.ServiceProvider.GetRequiredService<SessionDbContext>();
+        
+        logger.LogInformation("Attempting to connect to database and apply migrations...");
+        await db.Database.MigrateAsync();
+        logger.LogInformation("Database migrations applied successfully");
+    }
+    catch (Exception ex)
+    {
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "An error occurred while migrating the database. Connection string may be invalid.");
+        
+        // In production, you might want to throw to prevent the app from starting with a broken database
+        if (!app.Environment.IsDevelopment())
+        {
+            throw;
+        }
+    }
 }
 
 // Wire RoomCodeService events to SignalR hub
