@@ -65,10 +65,10 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: partition => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 100,
+                PermitLimit = 10000,
                 Window = TimeSpan.FromMinutes(1),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 10
+                QueueLimit = 1000
             }));
 
     // Strict policy for resource-intensive operations
@@ -77,10 +77,10 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: partition => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 10,
+                PermitLimit = 500,
                 Window = TimeSpan.FromMinutes(1),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 2
+                QueueLimit = 50
             }));
 
     // Sliding window for API endpoints (more granular control)
@@ -89,11 +89,11 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: partition => new SlidingWindowRateLimiterOptions
             {
-                PermitLimit = 50,
+                PermitLimit = 5000,
                 Window = TimeSpan.FromMinutes(1),
                 SegmentsPerWindow = 6,  // 10-second segments
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 5
+                QueueLimit = 500
             }));
 
     // Token bucket for burst traffic (searches, etc.)
@@ -102,11 +102,11 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: partition => new TokenBucketRateLimiterOptions
             {
-                TokenLimit = 20,
+                TokenLimit = 1000,
                 ReplenishmentPeriod = TimeSpan.FromSeconds(10),
-                TokensPerPeriod = 5,
+                TokensPerPeriod = 50,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 3
+                QueueLimit = 50
             }));
 
     // Concurrency limiter for sync operations (one at a time per IP)
@@ -115,9 +115,9 @@ builder.Services.AddRateLimiter(options =>
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: partition => new ConcurrencyLimiterOptions
             {
-                PermitLimit = 1,
+                PermitLimit = 100,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 1
+                QueueLimit = 200
             }));
 
     // Custom rejection response

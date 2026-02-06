@@ -88,7 +88,7 @@ namespace SessionApp.Controllers
 
         // POST api/commanders/sync
         [HttpPost("sync")]
-        [EnableRateLimiting("sync")] // Very strict - only 1 concurrent request per IP
+        [EnableRateLimiting("commanderSync")]
         public async Task<IActionResult> SyncCommanders()
         {
             var count = await _scryfallService.FetchAndStoreCommandersAsync();
