@@ -21,6 +21,7 @@ namespace SessionApp.Services
         private bool _disposed;
 
         private readonly IServiceProvider? _serviceProvider;
+        private readonly GroupGenerationService _groupGenerationService;
 
         // Events for real-time notifications (subscribers may forward to SignalR)
         public event Action<RoomSession>? SessionExpired;
@@ -41,6 +42,7 @@ namespace SessionApp.Services
         public RoomCodeService(IServiceProvider? serviceProvider = null)
         {
             _serviceProvider = serviceProvider;
+            _groupGenerationService = new GroupGenerationService();
             _cleanupTimer = new Timer(_ => CleanupExpiredSessions(), null, _cleanupInterval, _cleanupInterval);
 
             // Load existing sessions from database on startup
@@ -308,7 +310,7 @@ namespace SessionApp.Services
                         session.CurrentRound++;
                 }
 
-                var groups = RanzomizeRound(participants, session, Array.Empty<Group>(), task);
+                var groups = _groupGenerationService.RanzomizeRound(participants, session, Array.Empty<Group>(), task);
 
                 session.Groups = Array.AsReadOnly(groups.ToArray());
                 session.IsGameStarted = true;

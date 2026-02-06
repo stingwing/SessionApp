@@ -174,11 +174,11 @@ builder.Services.AddScoped<SessionRepository>();
 // Repository will be resolved per-request via IServiceProvider
 builder.Services.AddSingleton<RoomCodeService>();
 
-// Register HttpClient for ScryfallService
-builder.Services.AddHttpClient<ScryfallService>();
-
-// Register ScryfallService as scoped (since it depends on DbContext which is scoped)
-builder.Services.AddScoped<ScryfallService>();
+// This creates an HttpClient specifically for ScryfallService
+builder.Services.AddHttpClient<ScryfallService>(client =>
+{
+    client.DefaultRequestHeaders.Add("User-Agent", "SessionApp/1.0 (t.i.mollenhauer@gmail.com)");
+});
 
 // Register the Commander Sync Hosted Service
 builder.Services.AddHostedService<CommanderSyncHostedService>();

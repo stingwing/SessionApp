@@ -14,6 +14,11 @@ namespace SessionApp.Services
     {
         private readonly HttpClient _httpClient;
         private readonly SessionDbContext _dbContext;
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNameCaseInsensitive = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
 
         public ScryfallService(HttpClient httpClient, SessionDbContext dbContext)
         {
@@ -29,10 +34,16 @@ namespace SessionApp.Services
             while (!string.IsNullOrEmpty(url))
             {
                 var response = await _httpClient.GetAsync(url);
-                response.EnsureSuccessStatusCode();
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    throw new HttpRequestException(
+                        $"Scryfall API returned {response.StatusCode}. Response: {errorContent}");
+                }
 
                 var json = await response.Content.ReadAsStringAsync();
-                var result = JsonSerializer.Deserialize<ScryfallResponse>(json);
+                var result = JsonSerializer.Deserialize<ScryfallResponse>(json, JsonOptions);
 
                 if (result?.Data != null)
                 {
