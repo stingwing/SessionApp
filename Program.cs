@@ -21,7 +21,7 @@ builder.Services.AddCors(options =>
                 "http://localhost:3000",   // Common React port
                 "http://localhost:5173",   // Common Vite port
                 "https://localhost:7086",   // Your own backend (if needed)
-                "https://magicreactrandomizerapi.onrender.com",
+                 "https://magicreactrandomizerapi.onrender.com",
                 "https://commanderpodcreator.com"  // Production frontend
             )
             .AllowAnyHeader()

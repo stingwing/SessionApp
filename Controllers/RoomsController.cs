@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using SessionApp.Hubs;
@@ -46,7 +47,7 @@ namespace SessionApp.Controllers
         [HttpPost("{code}/join")]
         public async Task<IActionResult> Join(string code, [FromBody] JoinRoomRequest request)
         {
-            var ok = _roomService.TryJoin(code, request.ParticipantId, request.ParticipantName);
+            var ok = _roomService.TryJoin(code, request.ParticipantId, request.ParticipantName, request.Commander);
             if (!ok.Contains("Success")) 
                 return NotFound(new { message = ok });
 
@@ -64,58 +65,78 @@ namespace SessionApp.Controllers
             if (session is null) return NotFound();
 
             var participants = session.Participants.Values
-                .Select(p => new RoomParticipant(p.Id, p.Name, p.JoinedAtUtc))
+                .Select(p => new RoomParticipant(p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc))
                 .ToArray();
 
-            return Ok(new GetRoomResponse(session.Code, session.HostId, session.CreatedAtUtc, session.ExpiresAtUtc, session.Participants.Count, participants));
+            return Ok(new GetRoomResponse(
+                session.Code, 
+                session.EventName,
+                session.HostId, 
+                session.CreatedAtUtc, 
+                session.ExpiresAtUtc, 
+                session.Participants.Count, 
+                participants));
         }
 
-        // GET api/rooms
+        // GET api/rooms/all
         // Returns all sessions with their full data including participants, groups, and archived rounds.
         [HttpGet("/all")]
         public async Task<IActionResult> GetAllSessions()
         {
             var sessions = await _roomService.GetAllSessionsAsync();
 
+            if(sessions == null)
+                return StatusCode(StatusCodes.Status500InternalServerError);
+
             var result = sessions.Select(session => new
             {
                 Code = session.Code,
+                EventName = session.EventName,
                 HostId = session.HostId,
                 CreatedAtUtc = session.CreatedAtUtc,
                 ExpiresAtUtc = session.ExpiresAtUtc,
                 IsGameStarted = session.IsGameStarted,
                 IsGameEnded = session.IsGameEnded,
+                Archived = session.Archived,
                 CurrentRound = session.CurrentRound,
                 WinnerParticipantId = session.WinnerParticipantId,
                 Settings = session.Settings,
                 ParticipantCount = session.Participants.Count,
-                Participants = session.Participants.Values.Select(p => new RoomParticipant(p.Id, p.Name, p.JoinedAtUtc)).ToArray(),
-                CurrentGroups = session.Groups?.Select(g => new
+                Participants = session.Participants.Values.Select(participant => new RoomParticipant(
+                    participant.Id,
+                    participant.Name,
+                    participant.Commander,
+                    participant.Points,
+                    participant.JoinedAtUtc)).ToArray(),
+                CurrentGroups = session.Groups?.Select(group => new
                 {
-                    GroupNumber = g.GroupNumber,
-                    Round = g.RoundNumber,
-                    Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
-                    Result = g.HasResult,
-                    Winner = g.WinnerParticipantId,
-                    Draw = g.IsDraw,
-                    StartedAtUtc = g.StartedAtUtc,
-                    Statistics = g.Statistics
+                    GroupNumber = group.GroupNumber,
+                    Round = group.RoundNumber,
+                    RoundStarted = group.RoundStarted,
+                    Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray(),
+                    Result = group.HasResult,
+                    Winner = group.WinnerParticipantId,
+                    Draw = group.IsDraw,
+                    StartedAtUtc = group.StartedAtUtc,
+                    CompletedAtUtc = group.CompletedAtUtc,
+                    Statistics = group.Statistics
                 }).ToArray(),
                 ArchivedRoundsCount = session.ArchivedRounds.Count,
                 ArchivedRounds = session.ArchivedRounds.Select(roundGroups =>
                 {
                     var roundNumber = roundGroups.FirstOrDefault()?.RoundNumber ?? -1;
-                    var groups = roundGroups.Select(g => new
+                    var groups = roundGroups.Select(group => new
                     {
-                        GroupNumber = g.GroupNumber,
-                        Round = g.RoundNumber,
-                        Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
-                        Result = g.HasResult,
-                        Winner = g.WinnerParticipantId,
-                        Draw = g.IsDraw,
-                        StartTime = g.StartedAtUtc,
-                        EndTime = g.CompletedAtUtc,
-                        Statistics = g.Statistics
+                        GroupNumber = group.GroupNumber,
+                        Round = group.RoundNumber,
+                        RoundStarted = group.RoundStarted,
+                        Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray(),
+                        Result = group.HasResult,
+                        Winner = group.WinnerParticipantId,
+                        Draw = group.IsDraw,
+                        StartTime = group.StartedAtUtc,
+                        EndTime = group.CompletedAtUtc,
+                        Statistics = group.Statistics
                     }).ToArray();
 
                     return new
@@ -156,19 +177,31 @@ namespace SessionApp.Controllers
 
             lock (session)
             {
-                // Add settings here
+                // Update event name if provided
+                if (!string.IsNullOrWhiteSpace(request.EventName))
+                    session.EventName = request.EventName;
+                
+                // Add other settings here as needed
+            }
+
+            // Save settings to database
+            var saved = await _roomService.SaveSessionToDatabaseAsync(session);
+            if (!saved)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Failed to save settings to database" });
             }
 
             var payload = new
             {
                 RoomCode = session.Code,
+                EventName = session.EventName,
                 Settings = session.Settings
             };
 
             // Notify connected clients in the room that settings changed
             await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("SettingsChanged", payload);
 
-            return Ok(session.Settings);
+            return Ok(new { session.EventName, session.Settings });
         }
 
         // POST api/rooms/{code}/handlegame
@@ -203,10 +236,11 @@ namespace SessionApp.Controllers
                 "group" => HandleRoundOptions.CreateGroup,
                 "endround" => HandleRoundOptions.EndRound,
                 "endgame" => HandleRoundOptions.EndGame,
+                "resetround" => HandleRoundOptions.ResetRound,
                 _ => HandleRoundOptions.Invalid,
             };
 
-            if (task == HandleRoundOptions.StartRound)
+            if (task == HandleRoundOptions.StartRound || task == HandleRoundOptions.ResetRound)
             {
                 if (session.Groups is null || session.Groups.Count == 0)
                     return BadRequest(new { message = "No groups available to start" });
@@ -215,10 +249,21 @@ namespace SessionApp.Controllers
                 {
                     var currentTime = DateTime.UtcNow;
                     foreach (var group in session.Groups)
-                    {
-                        group.RoundStarted = true;
+                    {   
+                        if(task == HandleRoundOptions.StartRound)
+                            group.RoundStarted = true;
+                        else if (task == HandleRoundOptions.ResetRound)
+                            group.RoundStarted = false;
+
                         group.StartedAtUtc = currentTime;
                     }
+                }
+
+                // Save the updated session to the database
+                var saved = await _roomService.SaveSessionToDatabaseAsync(session);
+                if (!saved)
+                {
+                    return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Failed to save session to database" });
                 }
 
                 var payload = new
@@ -227,13 +272,13 @@ namespace SessionApp.Controllers
                     Round = session.CurrentRound,
                     StartedAtUtc = DateTime.UtcNow,
                     RoundLength = session.Settings.RoundLength,
-                    Groups = session.Groups.Select(g => new
+                    Groups = session.Groups.Select(group => new
                     {
-                        g.GroupNumber,
-                        g.RoundNumber,
-                        g.RoundStarted,
-                        g.StartedAtUtc,
-                        Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()
+                        group.GroupNumber,
+                        group.RoundNumber,
+                        group.RoundStarted,
+                        group.StartedAtUtc,
+                        Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray()
                     }).ToArray()
                 };
 
@@ -257,7 +302,13 @@ namespace SessionApp.Controllers
                 {
                     RoomCode = code.ToUpperInvariant(),
                     Round = round,
-                    Groups = groups.Select(g => g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray()).ToArray()
+                    Groups = groups.Select(group => new
+                    {
+                        GroupNumber = group.GroupNumber,
+                        RoundNumber = group.RoundNumber,
+                        RoundStarted = group.RoundStarted,
+                        Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray()
+                    }).ToArray()
                 };
 
                 // Broadcast game update to clients in the room group
@@ -286,16 +337,19 @@ namespace SessionApp.Controllers
             var currentRound = session.Groups;
             var roundNumber = session.CurrentRound;
 
-            var groups = currentRound.Select(g => new
+            var groups = currentRound.Select(group => new
             {
-                GroupNumber = g.GroupNumber,
-                Round = g.RoundNumber,
-                Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
-                Result = g.HasResult,
-                Winner = g.WinnerParticipantId,
-                Draw = g.IsDraw,
-                StartedAtUtc = g.StartedAtUtc,
-                Statistics = g.Statistics,
+                GroupNumber = group.GroupNumber,
+                Round = group.RoundNumber,
+                RoundStarted = group.RoundStarted,
+                Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray(),
+                Result = group.HasResult,
+                Winner = group.WinnerParticipantId,
+                Draw = group.IsDraw,
+                StartedAtUtc = group.StartedAtUtc,
+                CompletedAtUtc = group.CompletedAtUtc,
+                Statistics = group.Statistics,
+                RoundLength = session.Settings.RoundLength,
             }).ToArray();
 
             return Ok(groups);
@@ -314,14 +368,14 @@ namespace SessionApp.Controllers
                 return NotFound(new { message = "Room not found or expired" });
 
             if (!session.IsGameStarted || session.Groups is null)
-                return NotFound(new { message = "Game has not been started for this room" });
+                return NoContent();
 
             // Find the group that contains the participant
             foreach (var group in session.Groups)
             {
                 if (group.Participants.ContainsKey(participantId))
                 {
-                    var members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray();
+                    var members = group.ParticipantsOrdered.Select(participant => new { participant.Id, participant.Name, participant.Commander, participant.Points, participant.JoinedAtUtc }).ToArray();
                     var result = new
                     {
                         RoomCode = session.Code,
@@ -329,11 +383,14 @@ namespace SessionApp.Controllers
                         GroupNumber = group.GroupNumber,
                         Members = members,
                         Round = group.RoundNumber,
+                        RoundStarted = group.RoundStarted,
                         Result = group.HasResult,
                         Winner = group.WinnerParticipantId,
                         Draw = group.IsDraw,
                         Statistics = group.Statistics,
                         StartedAtUtc = group.StartedAtUtc,
+                        CompletedAtUtc = group.CompletedAtUtc,
+                        RoundLength = session.Settings.RoundLength,
                     };
                     return Ok(result);
                 }
@@ -358,17 +415,18 @@ namespace SessionApp.Controllers
             var rounds = archived.Select(roundGroups =>
             {
                 var roundNumber = roundGroups.FirstOrDefault()?.RoundNumber ?? -1;
-                var groups = roundGroups.Select(g => new
+                var groups = roundGroups.Select(group => new
                 {
-                    GroupNumber = g.GroupNumber,
-                    Round = g.RoundNumber,
-                    Members = g.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.JoinedAtUtc }).ToArray(),
-                    Result = g.HasResult,
-                    Winner = g.WinnerParticipantId,
-                    Draw = g.IsDraw,
-                    StartedAtUtc = g.StartedAtUtc,
-                    CompletedAtUtc = g.CompletedAtUtc,
-                    Statistics = g.Statistics,
+                    GroupNumber = group.GroupNumber,
+                    Round = group.RoundNumber,
+                    RoundStarted = group.RoundStarted,
+                    Members = group.ParticipantsOrdered.Select(participant => new { participant.Id, participant.Name, participant.Commander, participant.Points, participant.JoinedAtUtc }).ToArray(),
+                    Result = group.HasResult,
+                    Winner = group.WinnerParticipantId,
+                    Draw = group.IsDraw,
+                    StartedAtUtc = group.StartedAtUtc,
+                    CompletedAtUtc = group.CompletedAtUtc,
+                    Statistics = group.Statistics,
                 }).ToArray();
 
                 return new
@@ -394,22 +452,16 @@ namespace SessionApp.Controllers
             if (string.IsNullOrWhiteSpace(code) || request is null || string.IsNullOrWhiteSpace(request.ParticipantId) || string.IsNullOrWhiteSpace(request.Result))
                 return BadRequest(new { message = "code, participantId and result are required" });
 
+            var commander = request.Commander;
             // parse result
             var normalized = request.Result.Trim().ToLowerInvariant();
             if (normalized != "win" && normalized != "draw" && normalized != "drop" && normalized != "data")
-                return BadRequest(new { message = "result must be one of: win, draw, drop" });
+                return BadRequest(new { message = "result must be one of: win, draw, drop, data" });
 
             var outcome = normalized == "win" ? ReportOutcomeType.Win : normalized == "draw" ? ReportOutcomeType.Draw : normalized == "drop" ? ReportOutcomeType.DropOut : ReportOutcomeType.DataOnly;
 
             // Pass statistics to the service
-            var serviceResult = _roomService.ReportOutcome(
-                code, 
-                request.ParticipantId, 
-                outcome, 
-                request.Statistics ?? new Dictionary<string, object>(),
-                out var winnerId, 
-                out var removedParticipant, 
-                out var groupIndex);
+            var serviceResult = _roomService.ReportOutcome(code, request.ParticipantId, outcome, commander, request.Statistics ?? new Dictionary<string, object>(), out var winnerId, out var removedParticipant, out var groupIndex);
 
             return serviceResult switch
             {
@@ -417,7 +469,7 @@ namespace SessionApp.Controllers
                 ReportOutcomeResult.NotStarted => BadRequest(new { message = "Game has not been started for this room" }),
                 ReportOutcomeResult.ParticipantNotFound => NotFound(new { message = "Participant not found in room or not in current round" }),
                 ReportOutcomeResult.AlreadyEnded => BadRequest(new { message = "This group already has a result" }),
-                ReportOutcomeResult.Success when outcome == ReportOutcomeType.DropOut => await HandleDropoutBroadcast(code, removedParticipant),// add statistics handling
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.DropOut => await HandleDropoutBroadcast(code, removedParticipant),
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.Win => await HandleGroupEndedBroadcast(code, "win", winnerId, groupIndex),
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.Draw => await HandleGroupEndedBroadcast(code, "draw", null, groupIndex),
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.DataOnly => await HandleGroupEndedBroadcast(code, "data", null, groupIndex),
@@ -435,7 +487,7 @@ namespace SessionApp.Controllers
                 return BadRequest(new { message = "Invalid group index" });
 
             var members = session.Groups[groupIndex.Value].ParticipantsOrdered
-                .Select(p => new { p.Id, p.Name, p.JoinedAtUtc })
+                .Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc })
                 .ToArray();
 
             var payload = new
@@ -444,7 +496,8 @@ namespace SessionApp.Controllers
                 GroupNumber = groupIndex.Value + 1,
                 Result = result,
                 WinnerParticipantId = winnerId,
-                Members = members
+                Members = members,
+                Statistics = session.Groups[groupIndex.Value].Statistics
             };
 
             await _hubContext.Clients.Group(code.ToUpperInvariant()).SendAsync("GroupEnded", payload);
@@ -470,22 +523,23 @@ namespace SessionApp.Controllers
 
     public record CreateRoomRequest(string HostId, int CodeLength = 6, TimeSpan? Ttl = null);
     public record CreateRoomResponse(string Code, DateTime ExpiresAtUtc);
-    public record JoinRoomRequest(string ParticipantId, string ParticipantName);
+    public record JoinRoomRequest(string ParticipantId, string ParticipantName, string Commander);
     
     // Updated to include optional statistics dictionary
     public record ReportOutcomeRequest(
         string ParticipantId, 
-        string Result, 
+        string Result,
+        string Commander,
         Dictionary<string, object>? Statistics = null);
 
     // DTO used by GetRoomResponse to expose participant details
-    public record RoomParticipant(string Id, string Name, DateTime JoinedAtUtc);
+    public record RoomParticipant(string Id, string Name, string Commander, int Points, DateTime JoinedAtUtc);
 
-    // Updated GetRoomResponse now includes the participants array
-    public record GetRoomResponse(string Code, string HostId, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, int ParticipantCount, RoomParticipant[] Participants);
+    // Updated GetRoomResponse now includes the participants array and EventName
+    public record GetRoomResponse(string Code, string EventName, string HostId, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, int ParticipantCount, RoomParticipant[] Participants);
 
     // Request DTO for updating room settings.
-    public record UpdateRoomSettingsRequest(string HostId, int MaxGroupSize = 4, bool AllowJoinAfterStart = false, bool AllowSpectators = true);
+    public record UpdateRoomSettingsRequest(string HostId, string? EventName = null, int MaxGroupSize = 4, bool AllowJoinAfterStart = false, bool AllowSpectators = true);
 
     // Request DTO to end a session. HostId required for authorization.
     public record EndSessionRequest(string HostId);

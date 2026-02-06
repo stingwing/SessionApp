@@ -48,6 +48,7 @@ namespace SessionApp.Data.Entities
         public Guid? ArchivedRoundId { get; set; }
         
         // Common statistics (fixed columns for queryability)
+        public bool RoundStarted { get; set; } = false;
         public DateTime? StartedAtUtc { get; set; }
         public DateTime? CompletedAtUtc { get; set; }
         

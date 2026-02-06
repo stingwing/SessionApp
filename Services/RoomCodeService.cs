@@ -71,6 +71,53 @@ namespace SessionApp.Services
             }
         }
 
+        /// <summary>
+        /// Saves a session to the database asynchronously.
+        /// Returns true if save was successful, false otherwise.
+        /// </summary>
+        public async Task<bool> SaveSessionToDatabaseAsync(RoomSession session)
+        {
+            if (_serviceProvider == null)
+                return false;
+
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                await repository.SaveSessionAsync(session);
+                return true;
+            }
+            catch (Exception)
+            {
+                // Log error
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Saves a session to the database using fire-and-forget pattern (for non-critical saves).
+        /// Does not block the calling thread and does not return success/failure.
+        /// </summary>
+        private void SaveSessionToDatabaseFireAndForget(RoomSession session)
+        {
+            if (_serviceProvider == null)
+                return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var scope = _serviceProvider.CreateScope();
+                    var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                    await repository.SaveSessionAsync(session);
+                }
+                catch (Exception)
+                {
+                    // Log error - don't fail session operations if DB save fails
+                }
+            });
+        }
+
         public RoomSession CreateSession(string hostId, int codeLength = 6, TimeSpan? ttl = null)
         {
             if (string.IsNullOrWhiteSpace(hostId))
@@ -93,22 +140,7 @@ namespace SessionApp.Services
                 if (_sessions.TryAdd(key, session))
                 {
                     // Save to database asynchronously (fire and forget with proper error handling)
-                    if (_serviceProvider != null)
-                    {
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                using var scope = _serviceProvider.CreateScope();
-                                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                                await repository.SaveSessionAsync(session);
-                            }
-                            catch (Exception)
-                            {
-                                // Log error - don't fail session creation if DB save fails
-                            }
-                        });
-                    }
+                    SaveSessionToDatabaseFireAndForget(session);
                     return session;
                 }
             }
@@ -116,7 +148,7 @@ namespace SessionApp.Services
             throw new InvalidOperationException("Unable to generate a unique room code. Try increasing code length.");
         }
 
-        public string TryJoin(string code, string participantId, string participantName = "")
+        public string TryJoin(string code, string participantId, string participantName = "", string commander = "")
         {
             if (string.IsNullOrWhiteSpace(code))
                 return $"Code Doesn't Exist";
@@ -145,30 +177,17 @@ namespace SessionApp.Services
             {
                 Id = participantId,
                 Name = participantName,
-                JoinedAtUtc = DateTime.UtcNow
+                JoinedAtUtc = DateTime.UtcNow,
+                Commander = commander
             };
 
             if (session.Participants.ContainsKey(participantId))
                 return $"A user with the id {participantId} is already in the game";
 
             session.Participants.AddOrUpdate(participantId, participant, (_, __) => participant);
+            
             // Save to database (fire and forget)
-            if (_serviceProvider != null)
-            {
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                        await repository.SaveSessionAsync(session);
-                    }
-                    catch (Exception)
-                    {
-                        // Log error
-                    }
-                });
-            }
+            SaveSessionToDatabaseFireAndForget(session);
 
             // Notify subscribers that a participant joined
             ParticipantJoined?.Invoke(session, participant);
@@ -236,38 +255,6 @@ namespace SessionApp.Services
             }
         }
 
-        /// <summary>
-        /// Starts a game for the given room code. Participants are randomized and partitioned into groups of up to 4.
-        /// The last group may contain fewer than 4 participants if the total is not divisible by 4.
-        /// Returns the groups on success; returns null if session not found, expired, already started, or has no participants.
-        /// </summary>
-        //public IReadOnlyList<Group>? StartGame(string code, ref string errorMessage)
-        //{
-        //    var session = RoundHandler(code, false, ref errorMessage);
-        //    if (session == null || session.Groups == null || errorMessage != string.Empty)
-        //        return null;
-
-        //    // Notify subscribers (SignalR hub can forward to clients)
-        //    GameStarted?.Invoke(session, session.Groups);
-        //    return session.Groups;
-        //}
-
-        /// <summary>
-        /// Starts a new round for an ongoing session (re-shuffles remaining participants and re-partitions groups).
-        /// Returns the new groups on success; returns null if session not found, expired, not started, or there are no participants.
-        /// Dropped participants have already been removed from session.Participants and therefore will not be included.
-        /// </summary>
-        //public IReadOnlyList<Group>? StartNewRound(string code, HandleRoundOptions task, Dictionary<string, object> playerGroup, ref string errorMessage)
-        //{
-        //    var session = RoundHandler(code, task, playerGroup, ref errorMessage);
-
-        //    if (session == null || session.Groups == null || errorMessage != string.Empty)
-        //        return null;
-
-        //    // Notify subscribers that a new round started
-        //    NewRoundStarted?.Invoke(session, session.Groups);
-        //    return session.Groups;
-        //}
         public IReadOnlyList<Group>? HandleRound(string code, HandleRoundOptions task, Dictionary<string, object> playerGroup, ref string errorMessage)
         {
             if (string.IsNullOrWhiteSpace(code))
@@ -323,22 +310,7 @@ namespace SessionApp.Services
                 session.IsGameStarted = true;
 
                 // Save to database (fire and forget)
-                if (_serviceProvider != null)
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            using var scope = _serviceProvider.CreateScope();
-                            var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                            await repository.SaveSessionAsync(session);
-                        }
-                        catch (Exception)
-                        {
-                            // Log error
-                        }
-                    });
-                }
+                SaveSessionToDatabaseFireAndForget(session);
 
                 NewRoundStarted?.Invoke(session, session.Groups);
                 return session.Groups;
@@ -889,6 +861,7 @@ namespace SessionApp.Services
             GenerateFirstRound,
             RegenerateRound,
             StartRound,
+            ResetRound,
             CreateGroup,
             EndRound,
             EndGame,
@@ -915,14 +888,7 @@ namespace SessionApp.Services
         /// - removedParticipant: set for DropOut
         /// - groupIndex: zero-based index of group affected (set for Win/Draw when participant belongs to a group)
         /// </summary>
-        public ReportOutcomeResult ReportOutcome(
-            string code, 
-            string participantId, 
-            ReportOutcomeType outcome, 
-            Dictionary<string, object> statistics,
-            out string? winnerParticipantId, 
-            out Participant? removedParticipant, 
-            out int? groupIndex)
+        public ReportOutcomeResult ReportOutcome(string code, string participantId, ReportOutcomeType outcome, string commander, Dictionary<string, object> statistics, out string? winnerParticipantId, out Participant? removedParticipant, out int? groupIndex)
         {
             winnerParticipantId = null;
             removedParticipant = null;
@@ -951,28 +917,20 @@ namespace SessionApp.Services
                         removedParticipant = removed;
                         
                         // Save to database (fire and forget)
-                        if (_serviceProvider != null)
-                        {
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    using var scope = _serviceProvider.CreateScope();
-                                    var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                                    await repository.SaveSessionAsync(session);
-                                }
-                                catch (Exception)
-                                {
-                                    // Log error
-                                }
-                            });
-                        }
+                        SaveSessionToDatabaseFireAndForget(session);
 
                         ParticipantDropped?.Invoke(session, removed);
                         return ReportOutcomeResult.Success;
                     }
 
                     return ReportOutcomeResult.ParticipantNotFound;
+                }
+
+                var participantExists = session.Participants.ContainsKey(participantId);
+
+                if (participantExists && commander != string.Empty)
+                {
+                    session.Participants[participantId].Commander = commander;
                 }
 
                 // For Win/Draw/DataOnly we require the participant to be in a group for the current round.
@@ -1004,23 +962,7 @@ namespace SessionApp.Services
                 if (outcome == ReportOutcomeType.DataOnly)
                 {
                     // Save to database (fire and forget)
-                    if (_serviceProvider != null )
-                    {
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                using var scope = _serviceProvider.CreateScope();
-                                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                                await repository.SaveSessionAsync(session);
-                            }
-                            catch (Exception)
-                            {
-                                // Log error
-                            }
-                        });
-                    }
-
+                    SaveSessionToDatabaseFireAndForget(session);
                     return ReportOutcomeResult.Success;
                 }
 
@@ -1038,22 +980,7 @@ namespace SessionApp.Services
                     winnerParticipantId = participantId;
 
                     // Save to database (fire and forget)
-                    if (_serviceProvider != null)
-                    {
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                using var scope = _serviceProvider.CreateScope();
-                                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                                await repository.SaveSessionAsync(session);
-                            }
-                            catch (Exception)
-                            {
-                                // Log error
-                            }
-                        });
-                    }
+                    SaveSessionToDatabaseFireAndForget(session);
 
                     // Notify subscribers
                     GameEnded?.Invoke(session, outcome, participantId);
@@ -1066,22 +993,7 @@ namespace SessionApp.Services
                     currentGroup.WinnerParticipantId = null;
 
                     // Save to database (fire and forget)
-                    if (_serviceProvider != null)
-                    {
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                using var scope = _serviceProvider.CreateScope();
-                                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                                await repository.SaveSessionAsync(session);
-                            }
-                            catch (Exception)
-                            {
-                                // Log error
-                            }
-                        });
-                    }
+                    SaveSessionToDatabaseFireAndForget(session);
 
                     GameEnded?.Invoke(session, outcome, null);
                     return ReportOutcomeResult.Success;
@@ -1096,7 +1008,7 @@ namespace SessionApp.Services
         /// Unlike EndSession in the controller, this doesn't require host authorization and is intended for expired sessions.
         /// Returns true if the session was found and cleaned up, false otherwise.
         /// </summary>
-        public bool CleanupExpiredSession(string code) // this might need to change for example should we clean up sessions? or wait for the end game event. Should we delete sessions that were never started?
+        public bool CleanupExpiredSession(string code)
         {
             if (string.IsNullOrWhiteSpace(code))
                 return false;
@@ -1121,22 +1033,7 @@ namespace SessionApp.Services
             }
 
             // Save to database (fire and forget)
-            if (_serviceProvider != null)
-            {
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        using var scope = _serviceProvider.CreateScope();
-                        var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                        await repository.SaveSessionAsync(session);
-                    }
-                    catch (Exception)
-                    {
-                        // Log error
-                    }
-                });
-            }
+            SaveSessionToDatabaseFireAndForget(session);
 
             return true;
         }

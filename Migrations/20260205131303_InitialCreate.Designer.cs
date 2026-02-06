@@ -12,8 +12,8 @@ using SessionApp.Data;
 namespace SessionApp.Migrations
 {
     [DbContext(typeof(SessionDbContext))]
-    [Migration("20260131032729_AddStatisticsAndExtendedFields")]
-    partial class AddStatisticsAndExtendedFields
+    [Migration("20260205131303_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -93,6 +93,11 @@ namespace SessionApp.Migrations
 
                     b.Property<int>("RoundNumber")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("RoundStarted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("SessionCode")
                         .IsRequired()

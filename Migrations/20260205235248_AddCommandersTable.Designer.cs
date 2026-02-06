@@ -12,8 +12,8 @@ using SessionApp.Data;
 namespace SessionApp.Migrations
 {
     [DbContext(typeof(SessionDbContext))]
-    [Migration("20260130204336_InitialCreate")]
-    partial class InitialCreate
+    [Migration("20260205235248_AddCommandersTable")]
+    partial class AddCommandersTable
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -31,6 +31,16 @@ namespace SessionApp.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Commander")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasDefaultValue("");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int>("RoundNumber")
                         .HasColumnType("integer");
 
@@ -39,11 +49,56 @@ namespace SessionApp.Migrations
                         .HasMaxLength(10)
                         .HasColumnType("character varying(10)");
 
+                    b.Property<string>("StatisticsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}");
+
+                    b.Property<int>("TurnCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(-1);
+
                     b.HasKey("Id");
 
-                    b.HasIndex("SessionCode");
+                    b.HasIndex("SessionCode", "RoundNumber");
 
                     b.ToTable("ArchivedRounds");
+                });
+
+            modelBuilder.Entity("SessionApp.Data.Entities.CommanderEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("LastUpdatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LegalitiesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ScryfallUri")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LastUpdatedUtc");
+
+                    b.HasIndex("Name");
+
+                    b.ToTable("Commanders");
                 });
 
             modelBuilder.Entity("SessionApp.Data.Entities.GroupEntity", b =>
@@ -54,6 +109,9 @@ namespace SessionApp.Migrations
 
                     b.Property<Guid?>("ArchivedRoundId")
                         .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("GroupNumber")
                         .HasColumnType("integer");
@@ -70,10 +128,24 @@ namespace SessionApp.Migrations
                     b.Property<int>("RoundNumber")
                         .HasColumnType("integer");
 
+                    b.Property<bool>("RoundStarted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("SessionCode")
                         .IsRequired()
                         .HasMaxLength(10)
                         .HasColumnType("character varying(10)");
+
+                    b.Property<DateTime?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StatisticsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}");
 
                     b.Property<string>("WinnerParticipantId")
                         .HasMaxLength(100)
@@ -82,6 +154,8 @@ namespace SessionApp.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ArchivedRoundId");
+
+                    b.HasIndex("RoundNumber");
 
                     b.HasIndex("SessionCode");
 
@@ -123,6 +197,13 @@ namespace SessionApp.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Commander")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasDefaultValue("");
+
                     b.Property<DateTime>("JoinedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -135,6 +216,11 @@ namespace SessionApp.Migrations
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
+
+                    b.Property<int>("Points")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
 
                     b.Property<string>("SessionCode")
                         .IsRequired()
@@ -155,11 +241,23 @@ namespace SessionApp.Migrations
                         .HasMaxLength(10)
                         .HasColumnType("character varying(10)");
 
+                    b.Property<bool>("Archived")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("CurrentRound")
                         .HasColumnType("integer");
+
+                    b.Property<string>("EventName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasDefaultValue("");
 
                     b.Property<DateTime>("ExpiresAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -186,6 +284,8 @@ namespace SessionApp.Migrations
                         .HasColumnType("character varying(100)");
 
                     b.HasKey("Code");
+
+                    b.HasIndex("Archived");
 
                     b.HasIndex("ExpiresAtUtc");
 

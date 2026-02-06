@@ -64,6 +64,40 @@ namespace SessionApp.Migrations
                     b.ToTable("ArchivedRounds");
                 });
 
+            modelBuilder.Entity("SessionApp.Data.Entities.CommanderEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("LastUpdatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LegalitiesJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("ScryfallUri")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LastUpdatedUtc");
+
+                    b.HasIndex("Name");
+
+                    b.ToTable("Commanders");
+                });
+
             modelBuilder.Entity("SessionApp.Data.Entities.GroupEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -90,6 +124,11 @@ namespace SessionApp.Migrations
 
                     b.Property<int>("RoundNumber")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("RoundStarted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("SessionCode")
                         .IsRequired()

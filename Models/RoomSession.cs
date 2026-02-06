@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SessionApp.Models
 {
@@ -39,6 +40,8 @@ namespace SessionApp.Models
         // Archived groups for completed rounds. Each entry is a read-only list representing the groups of a past round.
         // The list is ordered by round (older rounds first).
         public List<IReadOnlyList<Group>> ArchivedRounds { get; } = new();
+        public bool Archived { get; set; } = false;
+        public string EventName { get; set; } = string.Empty;
 
         public bool IsExpiredUtc() => DateTime.UtcNow >= ExpiresAtUtc;
     }
@@ -49,30 +52,13 @@ namespace SessionApp.Models
     /// </summary>
     public class RoomSettings
     {
-        //To Do add settings
-        //Allow users to join after game has started
-        //
         ///// </summary>
         public bool AllowJoinAfterStart { get; set; } = true;
         public bool PrioitizeWinners { get; set; } = true;
         public bool AllowGroupOfThree { get; set; } = true;
         public bool FurtherReduceOddsOfGroupOfThree { get; set; } = false;
-        public bool AllowGroupOfFive { get; set; } = false;
-        public TimeSpan RoundLength { get; set; } = TimeSpan.FromMinutes(90);
-
-
-        /// <summary>
-        /// Maximum group size used when partitioning participants. Supported values: 3 or 4.
-        /// Default is 4.
-        /// </summary>
-        //public int MaxGroupSize { get; set; } = 4;
-
-        ///// <summary>
-        ///// If true, spectators (non-playing observers) are permitted.
-        ///// Semantic handling of spectators is left to client/server logic.
-        ///// Default is true.
-        ///// </summary>
-        //public bool AllowSpectators { get; set; } = true;
+        public bool AllowGroupOfFive { get; set; } = false;  
+        public int RoundLength { get; set; } = 90;
     }
 
     public class Participant
@@ -124,8 +110,7 @@ namespace SessionApp.Models
         public string? WinnerParticipantId { get; set; }
 
         // Indicates whether the round has been started
-        public bool RoundStarted { get; set; }
-
+        public bool RoundStarted { get; set; } = false;
         // Fixed statistics for queryability
         public DateTime? StartedAtUtc { get; set; }
         public DateTime? CompletedAtUtc { get; set; }

@@ -16,11 +16,13 @@ namespace SessionApp.Migrations
                 columns: table => new
                 {
                     Code = table.Column<string>(type: "character varying(10)", maxLength: 10, nullable: false),
+                    EventName = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, defaultValue: ""),
                     HostId = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
                     CreatedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     ExpiresAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     IsGameStarted = table.Column<bool>(type: "boolean", nullable: false),
                     IsGameEnded = table.Column<bool>(type: "boolean", nullable: false),
+                    Archived = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
                     CurrentRound = table.Column<int>(type: "integer", nullable: false),
                     WinnerParticipantId = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                     SettingsJson = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}")
@@ -36,7 +38,11 @@ namespace SessionApp.Migrations
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
                     SessionCode = table.Column<string>(type: "character varying(10)", maxLength: 10, nullable: false),
-                    RoundNumber = table.Column<int>(type: "integer", nullable: false)
+                    RoundNumber = table.Column<int>(type: "integer", nullable: false),
+                    CompletedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
+                    Commander = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, defaultValue: ""),
+                    TurnCount = table.Column<int>(type: "integer", nullable: false, defaultValue: -1),
+                    StatisticsJson = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}")
                 },
                 constraints: table =>
                 {
@@ -57,7 +63,9 @@ namespace SessionApp.Migrations
                     SessionCode = table.Column<string>(type: "character varying(10)", maxLength: 10, nullable: false),
                     ParticipantId = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
                     Name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
-                    JoinedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                    JoinedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                    Commander = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false, defaultValue: ""),
+                    Points = table.Column<int>(type: "integer", nullable: false, defaultValue: 0)
                 },
                 constraints: table =>
                 {
@@ -82,7 +90,11 @@ namespace SessionApp.Migrations
                     HasResult = table.Column<bool>(type: "boolean", nullable: false),
                     WinnerParticipantId = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: true),
                     IsArchived = table.Column<bool>(type: "boolean", nullable: false),
-                    ArchivedRoundId = table.Column<Guid>(type: "uuid", nullable: true)
+                    ArchivedRoundId = table.Column<Guid>(type: "uuid", nullable: true),
+                    RoundStarted = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
+                    StartedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
+                    CompletedAtUtc = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
+                    StatisticsJson = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}")
                 },
                 constraints: table =>
                 {
@@ -123,9 +135,9 @@ namespace SessionApp.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_ArchivedRounds_SessionCode",
+                name: "IX_ArchivedRounds_SessionCode_RoundNumber",
                 table: "ArchivedRounds",
-                column: "SessionCode");
+                columns: new[] { "SessionCode", "RoundNumber" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_GroupParticipants_GroupId",
@@ -138,6 +150,11 @@ namespace SessionApp.Migrations
                 column: "ArchivedRoundId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_Groups_RoundNumber",
+                table: "Groups",
+                column: "RoundNumber");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Groups_SessionCode",
                 table: "Groups",
                 column: "SessionCode");
@@ -147,6 +164,11 @@ namespace SessionApp.Migrations
                 table: "Participants",
                 columns: new[] { "SessionCode", "ParticipantId" },
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Sessions_Archived",
+                table: "Sessions",
+                column: "Archived");
 
             migrationBuilder.CreateIndex(
                 name: "IX_Sessions_ExpiresAtUtc",

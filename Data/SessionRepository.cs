@@ -28,11 +28,13 @@ namespace SessionApp.Data
                 entity = new SessionEntity
                 {
                     Code = session.Code,
+                    EventName = session.EventName,
                     HostId = session.HostId,
                     CreatedAtUtc = session.CreatedAtUtc,
                     ExpiresAtUtc = session.ExpiresAtUtc,
                     IsGameStarted = session.IsGameStarted,
                     IsGameEnded = session.IsGameEnded,
+                    Archived = session.Archived,
                     CurrentRound = session.CurrentRound,
                     WinnerParticipantId = session.WinnerParticipantId,
                     SettingsJson = JsonSerializer.Serialize(session.Settings)
@@ -41,9 +43,11 @@ namespace SessionApp.Data
             }
             else
             {
+                entity.EventName = session.EventName;
                 entity.ExpiresAtUtc = session.ExpiresAtUtc;
                 entity.IsGameStarted = session.IsGameStarted;
                 entity.IsGameEnded = session.IsGameEnded;
+                entity.Archived = session.Archived;
                 entity.CurrentRound = session.CurrentRound;
                 entity.WinnerParticipantId = session.WinnerParticipantId;
                 entity.SettingsJson = JsonSerializer.Serialize(session.Settings);
@@ -71,8 +75,17 @@ namespace SessionApp.Data
                         SessionCode = session.Code,
                         ParticipantId = participant.Id,
                         Name = participant.Name,
+                        Commander = participant.Commander,
+                        Points = participant.Points,
                         JoinedAtUtc = participant.JoinedAtUtc
                     });
+                }
+                else
+                {
+                    // Update existing participant fields
+                    existing.Name = participant.Name;
+                    existing.Commander = participant.Commander;
+                    existing.Points = participant.Points;
                 }
             }
 
@@ -121,16 +134,16 @@ namespace SessionApp.Data
                     WinnerParticipantId = group.WinnerParticipantId,
                     IsArchived = isArchived,
                     ArchivedRoundId = archivedRoundId,
-                    // Save new fields
                     StartedAtUtc = group.StartedAtUtc,
                     CompletedAtUtc = group.CompletedAtUtc,
-                    StatisticsJson = group.GetStatisticsJson()
+                    StatisticsJson = group.GetStatisticsJson(),
+                    RoundStarted = group.RoundStarted
                 };
 
                 _context.Groups.Add(groupEntity);
                 await _context.SaveChangesAsync(); // Save to get groupEntity.Id
 
-                foreach (var participant in group.Participants.Values)
+                foreach (var participant in group.ParticipantsOrdered)
                 {
                     _context.GroupParticipants.Add(new GroupParticipantEntity
                     {
@@ -162,11 +175,41 @@ namespace SessionApp.Data
                     .Where(g => g.CompletedAtUtc.HasValue)
                     .Max(g => g.CompletedAtUtc);
 
+                // Extract statistics from groups (e.g., commander, turn count)
+                var roundStatistics = new Dictionary<string, object>();
+                var commanders = new List<string>();
+                var turnCounts = new List<int>();
+
+                foreach (var group in archivedRound)
+                {
+                    if (group.Statistics.TryGetValue("commander", out var commander))
+                        commanders.Add(commander?.ToString() ?? "");
+                    
+                    if (group.Statistics.TryGetValue("turnCount", out var turnCount))
+                    {
+                        if (turnCount is int tc)
+                            turnCounts.Add(tc);
+                    }
+                }
+
+                // Store aggregated statistics
+                var mostCommonCommander = commanders.GroupBy(c => c)
+                    .OrderByDescending(g => g.Count())
+                    .FirstOrDefault()?.Key ?? "";
+
+                var averageTurnCount = turnCounts.Any() ? (int)turnCounts.Average() : -1;
+
+                roundStatistics["commanders"] = commanders;
+                roundStatistics["averageTurnCount"] = averageTurnCount;
+
                 var archivedEntity = new ArchivedRoundEntity
                 {
                     SessionCode = session.Code,
                     RoundNumber = roundNumber,
-                    CompletedAtUtc = completedAtUtc
+                    CompletedAtUtc = completedAtUtc,
+                    Commander = mostCommonCommander,
+                    TurnCount = averageTurnCount,
+                    StatisticsJson = JsonSerializer.Serialize(roundStatistics)
                 };
                 _context.ArchivedRounds.Add(archivedEntity);
                 await _context.SaveChangesAsync(); // Get ID
@@ -192,11 +235,13 @@ namespace SessionApp.Data
             var session = new RoomSession
             {
                 Code = entity.Code,
+                EventName = entity.EventName,
                 HostId = entity.HostId,
                 CreatedAtUtc = entity.CreatedAtUtc,
                 ExpiresAtUtc = entity.ExpiresAtUtc,
                 IsGameStarted = entity.IsGameStarted,
                 IsGameEnded = entity.IsGameEnded,
+                Archived = entity.Archived,
                 CurrentRound = entity.CurrentRound,
                 WinnerParticipantId = entity.WinnerParticipantId,
                 Settings = JsonSerializer.Deserialize<RoomSettings>(entity.SettingsJson) ?? new RoomSettings()
@@ -209,6 +254,8 @@ namespace SessionApp.Data
                 {
                     Id = p.ParticipantId,
                     Name = p.Name,
+                    Commander = p.Commander,
+                    Points = p.Points,
                     JoinedAtUtc = p.JoinedAtUtc
                 };
             }
@@ -252,7 +299,8 @@ namespace SessionApp.Data
                 IsDraw = entity.IsDraw,
                 WinnerParticipantId = entity.WinnerParticipantId,
                 StartedAtUtc = entity.StartedAtUtc,
-                CompletedAtUtc = entity.CompletedAtUtc
+                CompletedAtUtc = entity.CompletedAtUtc,
+                RoundStarted = entity.RoundStarted
             };
 
             // Load statistics from JSON

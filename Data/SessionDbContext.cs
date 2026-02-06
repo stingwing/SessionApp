@@ -11,6 +11,7 @@ namespace SessionApp.Data
         public DbSet<GroupEntity> Groups { get; set; }
         public DbSet<GroupParticipantEntity> GroupParticipants { get; set; }
         public DbSet<ArchivedRoundEntity> ArchivedRounds { get; set; }
+        public DbSet<CommanderEntity> Commanders { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -48,6 +49,7 @@ namespace SessionApp.Data
                 entity.Property(e => e.SessionCode).IsRequired().HasMaxLength(10);
                 entity.Property(e => e.WinnerParticipantId).HasMaxLength(100);
                 entity.Property(e => e.StatisticsJson).HasDefaultValue("{}").HasColumnType("jsonb");
+                entity.Property(e => e.RoundStarted).ValueGeneratedOnAdd().HasDefaultValue(false);
                 entity.HasOne(e => e.Session)
                     .WithMany(s => s.Groups)
                     .HasForeignKey(e => e.SessionCode)
@@ -83,6 +85,16 @@ namespace SessionApp.Data
                     .HasForeignKey(e => e.SessionCode)
                     .OnDelete(DeleteBehavior.Cascade);
                 entity.HasIndex(e => new { e.SessionCode, e.RoundNumber });
+            });
+
+            modelBuilder.Entity<CommanderEntity>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Name).IsRequired().HasMaxLength(300);
+                entity.Property(e => e.ScryfallUri).IsRequired().HasMaxLength(500);
+                entity.Property(e => e.LegalitiesJson).HasDefaultValue("{}").HasColumnType("jsonb");
+                entity.HasIndex(e => e.Name);
+                entity.HasIndex(e => e.LastUpdatedUtc);
             });
         }
     }
