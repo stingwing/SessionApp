@@ -27,7 +27,7 @@ namespace SessionApp.Services
         public event Action<RoomSession, Participant>? ParticipantJoined;
 
         // New event: invoked when a game is successfully started and groups are created
-        public event Action<RoomSession, IReadOnlyList<Group>>? GameStarted;
+      //  public event Action<RoomSession, IReadOnlyList<Group>>? GameStarted;
 
         // New event: invoked when a new round is started (re-grouping during an ongoing session)
         public event Action<RoomSession, IReadOnlyList<Group>>? NewRoundStarted;
@@ -124,6 +124,10 @@ namespace SessionApp.Services
                 throw new ArgumentException("hostId is required", nameof(hostId));
 
             const int maxAttempts = 1000;
+
+            if (ttl == null)
+                ttl = TimeSpan.FromDays(7);
+
             for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
                 var code = GenerateCode(codeLength);
@@ -900,6 +904,9 @@ namespace SessionApp.Services
             var key = code.ToUpperInvariant();
             if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
                 return ReportOutcomeResult.RoomNotFound;
+
+            if (session.Groups == null)
+                return ReportOutcomeResult.Invalid;
 
             lock (session)
             {

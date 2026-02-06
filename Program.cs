@@ -125,16 +125,18 @@ builder.Services.AddRateLimiter(options =>
     {
         context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
         
+        double? retryAfterSeconds = null;
         if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
         {
             context.HttpContext.Response.Headers.RetryAfter = retryAfter.TotalSeconds.ToString();
+            retryAfterSeconds = retryAfter.TotalSeconds;
         }
 
         await context.HttpContext.Response.WriteAsJsonAsync(new
         {
             error = "Too many requests",
             message = "Rate limit exceeded. Please try again later.",
-            retryAfter = retryAfter?.TotalSeconds
+            retryAfter = retryAfterSeconds
         }, cancellationToken: cancellationToken);
     };
 });
