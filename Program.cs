@@ -124,7 +124,7 @@ builder.Services.AddRateLimiter(options =>
     options.OnRejected = async (context, cancellationToken) =>
     {
         context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-        
+
         double? retryAfterSeconds = null;
         if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
         {
@@ -142,29 +142,28 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // Add Database Context - PostgreSQL
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+
+if (string.IsNullOrEmpty(connectionString))
+{
+    // Log early validation errors to console since ILogger may not be available yet
+    Console.Error.WriteLine("Database connection string 'DefaultConnection' is null or empty");
+    throw new InvalidOperationException(
+        "Database connection string 'DefaultConnection' not found. " +
+        "Please configure it using User Secrets (development) or Environment Variables (production).");
+}
+
+// Ensure GSSAPI is disabled for cloud deployments (prevents libgssapi_krb5.so.2 error)
+//if (!builder.Environment.IsDevelopment() && !connectionString.Contains("Integrated Security", StringComparison.OrdinalIgnoreCase))
+//{
+//    connectionString += ";Integrated Security=false";
+//}
+
+// Log connection string with password masked for security (after building the app)
+var maskedConnectionString = MaskPassword(connectionString);
+
 builder.Services.AddDbContext<SessionDbContext>(options =>
 {
-    var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-    var logger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger<Program>>();
-    
-    if (string.IsNullOrEmpty(connectionString))
-    {
-        logger.LogError("Database connection string 'DefaultConnection' is null or empty");
-        throw new InvalidOperationException(
-            "Database connection string 'DefaultConnection' not found. " +
-            "Please configure it using User Secrets (development) or Environment Variables (production).");
-    }
-    
-    // Ensure GSSAPI is disabled for cloud deployments (prevents libgssapi_krb5.so.2 error)
-    if (!builder.Environment.IsDevelopment() && !connectionString.Contains("Integrated Security", StringComparison.OrdinalIgnoreCase))
-    {
-        connectionString += ";Integrated Security=false";
-    }
-    
-    // Log connection string with password masked for security
-    var maskedConnectionString = MaskPassword(connectionString);
-    logger.LogInformation("Database connection string loaded: {ConnectionString}", maskedConnectionString);
-    
     options.UseNpgsql(connectionString, npgsqlOptions =>
     {
         npgsqlOptions.EnableRetryOnFailure(
@@ -173,7 +172,7 @@ builder.Services.AddDbContext<SessionDbContext>(options =>
             errorCodesToAdd: null);
         npgsqlOptions.CommandTimeout(30);
     });
-    
+
     // Don't log sensitive data in production
     options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
     options.EnableDetailedErrors(builder.Environment.IsDevelopment());
@@ -212,23 +211,27 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+// Log the masked connection string after the app is built
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+logger.LogInformation("Database connection string loaded: {ConnectionString}", maskedConnectionString);
+
 // Create database and apply migrations with better error handling
 using (var scope = app.Services.CreateScope())
 {
     try
     {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        var scopedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         var db = scope.ServiceProvider.GetRequiredService<SessionDbContext>();
-        
-        logger.LogInformation("Attempting to connect to database and apply migrations...");
+
+        scopedLogger.LogInformation("Attempting to connect to database and apply migrations...");
         await db.Database.MigrateAsync();
-        logger.LogInformation("Database migrations applied successfully");
+        scopedLogger.LogInformation("Database migrations applied successfully");
     }
     catch (Exception ex)
     {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "An error occurred while migrating the database. Connection string may be invalid.");
-        
+        var scopedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        scopedLogger.LogError(ex, "An error occurred while migrating the database. Connection string may be invalid.");
+
         // In production, you might want to throw to prevent the app from starting with a broken database
         if (!app.Environment.IsDevelopment())
         {
@@ -257,12 +260,12 @@ if (hubContext != null)
 // Configure the HTTP request pipeline
 //if (app.Environment.IsDevelopment())
 //{
-    app.UseSwagger();
-    app.UseSwaggerUI(options =>
-    {
-        options.SwaggerEndpoint("/swagger/v1/swagger.json", "SessionApp API v1");
-        options.RoutePrefix = "swagger";
-    });
+app.UseSwagger();
+app.UseSwaggerUI(options =>
+{
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "SessionApp API v1");
+    options.RoutePrefix = "swagger";
+});
 //}
 
 app.UseHttpsRedirection();
@@ -282,7 +285,7 @@ static string MaskPassword(string connectionString)
 {
     if (string.IsNullOrEmpty(connectionString))
         return connectionString;
-    
+
     // Use regex to find and replace password value
     return System.Text.RegularExpressions.Regex.Replace(
         connectionString,
