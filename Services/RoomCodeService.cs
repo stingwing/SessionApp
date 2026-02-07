@@ -298,6 +298,12 @@ namespace SessionApp.Services
                     // Check if we're starting a new round (not just regenerating the current one)
                     if (task == HandleRoundOptions.GenerateRound || task == HandleRoundOptions.EndRound || task == HandleRoundOptions.EndGame)
                     {
+                        foreach (var group in session.Groups)
+                        {
+                            // Check for missing commander keys in statistics for all participants in the group
+                            EnsureCommanderStatistics(group);
+                        }
+
                         var snapshotGroups = SnapshotGroups(session.Groups);
                         session.ArchivedRounds.Add(snapshotGroups);
                     }
@@ -491,6 +497,9 @@ namespace SessionApp.Services
 
                 //Update Commander for this round.
                 currentGroup.Participants[participantId].Commander = commander;
+                
+                // Check for missing commander keys in statistics for all participants in the group
+                EnsureCommanderStatistics(currentGroup);
 
                 // Handle DataOnly - just update statistics without changing result
                 if (outcome == ReportOutcomeType.DataOnly)
@@ -538,6 +547,25 @@ namespace SessionApp.Services
         }
 
         /// <summary>
+        /// Ensures all participants' commanders are stored in the group statistics with the key pattern {participantId}_Commander.
+        /// Only adds missing keys where the participant has a non-empty commander.
+        /// </summary>
+        private void EnsureCommanderStatistics(Group group)
+        {
+            foreach (var participant in group.Participants.Values)
+            {
+                if (string.IsNullOrWhiteSpace(participant.Commander))
+                    continue;
+
+                var commanderKey = $"{participant.Id}_Commander";
+                if (!group.Statistics.ContainsKey(commanderKey))
+                {
+                    group.Statistics[commanderKey] = participant.Commander;
+                }
+            }
+        }
+
+        /// <summary>
         /// Cleanup method that archives current groups and marks expired sessions as ended.
         /// Unlike EndSession in the controller, this doesn't require host authorization and is intended for expired sessions.
         /// Returns true if the session was found and cleaned up, false otherwise.
@@ -563,6 +591,7 @@ namespace SessionApp.Services
                     session.ArchivedRounds.Add(snapshot);
                 }
 
+                session.Archived = true;
                 session.IsGameEnded = true;  
             }
 

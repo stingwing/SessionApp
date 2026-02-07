@@ -230,6 +230,55 @@ namespace SessionApp.Data
             }
         }
 
+        public async Task<List<RoomSession>> GetAllActiveSessionsAsync()
+        {
+            var entities = await _context.Sessions
+                .Where(s => s.Archived == false)
+                .Include(s => s.Participants)
+                .Include(s => s.Groups.Where(g => !g.IsArchived))
+                    .ThenInclude(g => g.GroupParticipants)
+                .Include(s => s.ArchivedRounds)
+                    .ThenInclude(a => a.Groups)
+                        .ThenInclude(g => g.GroupParticipants)
+                .AsSplitQuery()
+                .ToListAsync();
+
+            var sessions = new List<RoomSession>();
+            foreach (var entity in entities)
+            {
+                // Map directly from already-loaded entity instead of calling LoadSessionAsync
+                var session = MapEntityToSession(entity);
+                if (session != null)
+                    sessions.Add(session);
+            }
+
+            return sessions;
+        }
+
+        public async Task<List<RoomSession>> GetAllSessionsAsync()
+        {
+            var entities = await _context.Sessions
+                .Include(s => s.Participants)
+                .Include(s => s.Groups.Where(g => !g.IsArchived))
+                    .ThenInclude(g => g.GroupParticipants)
+                .Include(s => s.ArchivedRounds)
+                    .ThenInclude(a => a.Groups)
+                        .ThenInclude(g => g.GroupParticipants)
+                .AsSplitQuery()
+                .ToListAsync();
+
+            var sessions = new List<RoomSession>();
+            foreach (var entity in entities)
+            {
+                // Map directly from already-loaded entity instead of calling LoadSessionAsync
+                var session = MapEntityToSession(entity);
+                if (session != null)
+                    sessions.Add(session);
+            }
+
+            return sessions;
+        }
+
         public async Task<RoomSession?> LoadSessionAsync(string code)
         {
             var entity = await _context.Sessions
@@ -239,6 +288,7 @@ namespace SessionApp.Data
                 .Include(s => s.ArchivedRounds)
                     .ThenInclude(a => a.Groups)
                         .ThenInclude(g => g.GroupParticipants)
+                .AsSplitQuery()
                 .FirstOrDefaultAsync(s => s.Code == code.ToUpperInvariant());
 
             if (entity == null)
@@ -356,51 +406,24 @@ namespace SessionApp.Data
                 .ToListAsync();
         }
 
-        public async Task<List<RoomSession>> GetAllActiveSessionsAsync()
+        public async Task<List<SessionSummary>> GetAllSessionSummariesAsync()
         {
             var entities = await _context.Sessions
-                .Where(s => s.ExpiresAtUtc > DateTime.UtcNow)
-                .Include(s => s.Participants)
-                .Include(s => s.Groups.Where(g => !g.IsArchived))
-                    .ThenInclude(g => g.GroupParticipants)
-                .Include(s => s.ArchivedRounds)
-                    .ThenInclude(a => a.Groups)
-                        .ThenInclude(g => g.GroupParticipants)
+                .Select(s => new SessionSummary
+                {
+                    Code = s.Code,
+                    EventName = s.EventName,
+                    HostId = s.HostId,
+                    CreatedAtUtc = s.CreatedAtUtc,
+                    ExpiresAtUtc = s.ExpiresAtUtc,
+                    IsGameStarted = s.IsGameStarted,
+                    IsGameEnded = s.IsGameEnded,
+                    Archived = s.Archived,
+                    ParticipantCount = s.Participants.Count
+                })
                 .ToListAsync();
 
-            var sessions = new List<RoomSession>();
-            foreach (var entity in entities)
-            {
-                // Map directly from already-loaded entity instead of calling LoadSessionAsync
-                var session = MapEntityToSession(entity);
-                if (session != null)
-                    sessions.Add(session);
-            }
-
-            return sessions;
-        }
-
-        public async Task<List<RoomSession>> GetAllSessionsAsync()
-        {
-            var entities = await _context.Sessions
-                .Include(s => s.Participants)
-                .Include(s => s.Groups.Where(g => !g.IsArchived))
-                    .ThenInclude(g => g.GroupParticipants)
-                .Include(s => s.ArchivedRounds)
-                    .ThenInclude(a => a.Groups)
-                        .ThenInclude(g => g.GroupParticipants)
-                .ToListAsync();
-
-            var sessions = new List<RoomSession>();
-            foreach (var entity in entities)
-            {
-                // Map directly from already-loaded entity instead of calling LoadSessionAsync
-                var session = MapEntityToSession(entity);
-                if (session != null)
-                    sessions.Add(session);
-            }
-
-            return sessions;
+            return entities;
         }
     }
 }

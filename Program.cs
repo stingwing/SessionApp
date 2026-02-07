@@ -155,6 +155,12 @@ builder.Services.AddDbContext<SessionDbContext>(options =>
             "Please configure it using User Secrets (development) or Environment Variables (production).");
     }
     
+    // Ensure GSSAPI is disabled for cloud deployments (prevents libgssapi_krb5.so.2 error)
+    if (!builder.Environment.IsDevelopment() && !connectionString.Contains("Integrated Security", StringComparison.OrdinalIgnoreCase))
+    {
+        connectionString += ";Integrated Security=false";
+    }
+    
     // Log connection string with password masked for security
     var maskedConnectionString = MaskPassword(connectionString);
     logger.LogInformation("Database connection string loaded: {ConnectionString}", maskedConnectionString);
@@ -249,15 +255,15 @@ if (hubContext != null)
 }
 
 // Configure the HTTP request pipeline
-if (app.Environment.IsDevelopment())
-{
+//if (app.Environment.IsDevelopment())
+//{
     app.UseSwagger();
     app.UseSwaggerUI(options =>
     {
         options.SwaggerEndpoint("/swagger/v1/swagger.json", "SessionApp API v1");
         options.RoutePrefix = "swagger";
     });
-}
+//}
 
 app.UseHttpsRedirection();
 app.UseCors("AllowAll");

@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Connections;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -66,9 +67,18 @@ namespace SessionApp.Models
         public bool AllowJoinAfterStart { get; set; } = true;
         public bool PrioitizeWinners { get; set; } = true;
         public bool AllowGroupOfThree { get; set; } = true;
+        public bool AllowGroupOfFive { get; set; } = false;
         public bool FurtherReduceOddsOfGroupOfThree { get; set; } = false;
-        public bool AllowGroupOfFive { get; set; } = false;  
         public int RoundLength { get; set; } = 90;
+        public bool UsePoints { get; set; } = false;
+        public int PointsForWin { get; set; } = 1;
+        public int PointsForDraw { get; set; } = 0;
+        public int PointsForLoss { get; set; } = 0;
+        public int PointsForABye { get; set; } = 1;
+        public bool AllowCustomGroups { get; set; } = false;
+        public bool TournamentMode { get; set; } = false;
+        public int MaxRounds { get; set; } = 10000;
+
     }
 
     public class Participant
