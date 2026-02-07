@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -44,6 +45,15 @@ namespace SessionApp.Models
         public string EventName { get; set; } = string.Empty;
 
         public bool IsExpiredUtc() => DateTime.UtcNow >= ExpiresAtUtc;
+
+        /// <summary>
+        /// Checks if any group in the current round has been started.
+        /// </summary>
+        /// <returns>True if at least one group has RoundStarted set to true; otherwise false.</returns>
+        public bool HasAnyRoundStarted()
+        {
+            return Groups?.Any(g => g.RoundStarted) ?? false;
+        }
     }
 
     /// <summary>

@@ -145,13 +145,19 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddDbContext<SessionDbContext>(options =>
 {
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+    var logger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger<Program>>();
     
     if (string.IsNullOrEmpty(connectionString))
     {
+        logger.LogError("Database connection string 'DefaultConnection' is null or empty");
         throw new InvalidOperationException(
             "Database connection string 'DefaultConnection' not found. " +
             "Please configure it using User Secrets (development) or Environment Variables (production).");
     }
+    
+    // Log connection string with password masked for security
+    var maskedConnectionString = MaskPassword(connectionString);
+    logger.LogInformation("Database connection string loaded: {ConnectionString}", maskedConnectionString);
     
     options.UseNpgsql(connectionString, npgsqlOptions =>
     {
@@ -264,3 +270,17 @@ app.MapControllers();
 app.MapHub<RoomsHub>("/hubs/rooms");
 
 app.Run();
+
+// Helper method to mask password in connection string for logging
+static string MaskPassword(string connectionString)
+{
+    if (string.IsNullOrEmpty(connectionString))
+        return connectionString;
+    
+    // Use regex to find and replace password value
+    return System.Text.RegularExpressions.Regex.Replace(
+        connectionString,
+        @"(Password|Pwd)=([^;]*)",
+        "$1=***REDACTED***",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+}

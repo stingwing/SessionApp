@@ -19,7 +19,7 @@ namespace SessionApp.Services
         public List<Group> RanzomizeRound(List<Participant> participants, RoomSession session, IReadOnlyList<Group> snapshotGroups, RoomCodeService.HandleRoundOptions task)
         {
             var groups = new List<Group>();
-            var (groupsOf4, groupsOf3) = RoomCodeService.CalculateNumberOfGroups(participants.Count);
+            var (groupsOf4, groupsOf3) = CalculateNumberOfGroups(participants.Count);
 
             // If AllowGroupOfThree is false, only create groups of 4
             if (!session.Settings.AllowGroupOfThree)
@@ -474,6 +474,28 @@ namespace SessionApp.Services
                 int j = RandomNumberGenerator.GetInt32(i + 1);
                 (list[i], list[j]) = (list[j], list[i]);
             }
+        }
+
+        public static (int g4, int g3) CalculateNumberOfGroups(int n)
+        {
+            int g4 = n / 4, g3 = 0;
+
+            switch (n % 4)
+            {
+                case 1:
+                    g4 -= 2;
+                    g3 = 3;
+                    break;
+                case 2:
+                    g4 -= 1;
+                    g3 = 2;
+                    break;
+                case 3:
+                    g3 = 1;
+                    break;
+            }
+
+            return (g4, g3);
         }
     }
 }

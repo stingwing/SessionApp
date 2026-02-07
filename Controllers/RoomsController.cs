@@ -149,81 +149,6 @@ namespace SessionApp.Controllers
                 participants));
         }
 
-        // GET api/rooms/all
-        // Returns all sessions with their full data including participants, groups, and archived rounds.
-        [HttpGet("/all")]
-        [EnableRateLimiting("strict")] // VERY strict - this is a dangerous endpoint
-        public async Task<IActionResult> GetAllSessions()
-        {
-            // TODO: This endpoint should require admin authentication
-            // For now, just add warning in response
-            var sessions = await _roomService.GetAllSessionsAsync();
-
-            if (sessions == null)
-                return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Failed to retrieve sessions" });
-
-            var result = sessions.Select(session => new
-            {
-                Code = session.Code,
-                EventName = session.EventName,
-                HostId = session.HostId,
-                CreatedAtUtc = session.CreatedAtUtc,
-                ExpiresAtUtc = session.ExpiresAtUtc,
-                IsGameStarted = session.IsGameStarted,
-                IsGameEnded = session.IsGameEnded,
-                Archived = session.Archived,
-                CurrentRound = session.CurrentRound,
-                WinnerParticipantId = session.WinnerParticipantId,
-                Settings = session.Settings,
-                ParticipantCount = session.Participants.Count,
-                Participants = session.Participants.Values.Select(participant => new RoomParticipant(
-                    participant.Id,
-                    participant.Name,
-                    participant.Commander,
-                    participant.Points,
-                    participant.JoinedAtUtc)).ToArray(),
-                CurrentGroups = session.Groups?.Select(group => new
-                {
-                    GroupNumber = group.GroupNumber,
-                    Round = group.RoundNumber,
-                    RoundStarted = group.RoundStarted,
-                    Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray(),
-                    Result = group.HasResult,
-                    Winner = group.WinnerParticipantId,
-                    Draw = group.IsDraw,
-                    StartedAtUtc = group.StartedAtUtc,
-                    CompletedAtUtc = group.CompletedAtUtc,
-                    Statistics = group.Statistics
-                }).ToArray(),
-                ArchivedRoundsCount = session.ArchivedRounds.Count,
-                ArchivedRounds = session.ArchivedRounds.Select(roundGroups =>
-                {
-                    var roundNumber = roundGroups.FirstOrDefault()?.RoundNumber ?? -1;
-                    var groups = roundGroups.Select(group => new
-                    {
-                        GroupNumber = group.GroupNumber,
-                        Round = group.RoundNumber,
-                        RoundStarted = group.RoundStarted,
-                        Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray(),
-                        Result = group.HasResult,
-                        Winner = group.WinnerParticipantId,
-                        Draw = group.IsDraw,
-                        StartTime = group.StartedAtUtc,
-                        EndTime = group.CompletedAtUtc,
-                        Statistics = group.Statistics
-                    }).ToArray();
-
-                    return new
-                    {
-                        RoundNumber = roundNumber,
-                        Groups = groups
-                    };
-                }).ToArray()
-            }).ToArray();
-
-            return Ok(result);
-        }
-
         // New endpoint: update room settings
         // POST api/rooms/{code}/settings
         [HttpPost("{code}/settings")]
@@ -354,6 +279,12 @@ namespace SessionApp.Controllers
                             group.RoundStarted = false;
 
                         group.StartedAtUtc = currentTime;
+
+                        foreach (var participant in group.Participants)
+                        {
+                            if(session.Participants.ContainsKey(participant.Key))
+                                participant.Value.Commander = session.Participants[participant.Key].Commander;                             
+                        }
                     }
                 }
 
@@ -664,6 +595,81 @@ namespace SessionApp.Controllers
 
             await _hubContext.Clients.Group(code).SendAsync("ParticipantDroppedOut", payload);
             return Ok(payload);
+        }
+
+        // GET api/rooms/all
+        // Returns all sessions with their full data including participants, groups, and archived rounds.
+        [HttpGet("/all")]
+        [EnableRateLimiting("strict")] // VERY strict - this is a dangerous endpoint
+        public async Task<IActionResult> GetAllSessions()
+        {
+            // TODO: This endpoint should require admin authentication
+            // For now, just add warning in response
+            var sessions = await _roomService.GetAllSessionsAsync();
+
+            if (sessions == null)
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Failed to retrieve sessions" });
+
+            var result = sessions.Select(session => new
+            {
+                Code = session.Code,
+                EventName = session.EventName,
+                HostId = session.HostId,
+                CreatedAtUtc = session.CreatedAtUtc,
+                ExpiresAtUtc = session.ExpiresAtUtc,
+                IsGameStarted = session.IsGameStarted,
+                IsGameEnded = session.IsGameEnded,
+                Archived = session.Archived,
+                CurrentRound = session.CurrentRound,
+                WinnerParticipantId = session.WinnerParticipantId,
+                Settings = session.Settings,
+                ParticipantCount = session.Participants.Count,
+                Participants = session.Participants.Values.Select(participant => new RoomParticipant(
+                    participant.Id,
+                    participant.Name,
+                    participant.Commander,
+                    participant.Points,
+                    participant.JoinedAtUtc)).ToArray(),
+                CurrentGroups = session.Groups?.Select(group => new
+                {
+                    GroupNumber = group.GroupNumber,
+                    Round = group.RoundNumber,
+                    RoundStarted = group.RoundStarted,
+                    Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray(),
+                    Result = group.HasResult,
+                    Winner = group.WinnerParticipantId,
+                    Draw = group.IsDraw,
+                    StartedAtUtc = group.StartedAtUtc,
+                    CompletedAtUtc = group.CompletedAtUtc,
+                    Statistics = group.Statistics
+                }).ToArray(),
+                ArchivedRoundsCount = session.ArchivedRounds.Count,
+                ArchivedRounds = session.ArchivedRounds.Select(roundGroups =>
+                {
+                    var roundNumber = roundGroups.FirstOrDefault()?.RoundNumber ?? -1;
+                    var groups = roundGroups.Select(group => new
+                    {
+                        GroupNumber = group.GroupNumber,
+                        Round = group.RoundNumber,
+                        RoundStarted = group.RoundStarted,
+                        Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray(),
+                        Result = group.HasResult,
+                        Winner = group.WinnerParticipantId,
+                        Draw = group.IsDraw,
+                        StartTime = group.StartedAtUtc,
+                        EndTime = group.CompletedAtUtc,
+                        Statistics = group.Statistics
+                    }).ToArray();
+
+                    return new
+                    {
+                        RoundNumber = roundNumber,
+                        Groups = groups
+                    };
+                }).ToArray()
+            }).ToArray();
+
+            return Ok(result);
         }
     }
 
