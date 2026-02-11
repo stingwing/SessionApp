@@ -78,7 +78,6 @@ namespace SessionApp.Models
         public bool AllowCustomGroups { get; set; } = false;
         public bool TournamentMode { get; set; } = false;
         public int MaxRounds { get; set; } = 10000;
-
     }
 
     public class Participant

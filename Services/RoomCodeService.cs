@@ -261,7 +261,7 @@ namespace SessionApp.Services
             }
         }
 
-        public IReadOnlyList<Group>? HandleRound(string code, HandleRoundOptions task, Dictionary<string, object> playerGroup, ref string errorMessage)
+        public IReadOnlyList<Group>? HandleRound(string code, HandleRoundOptions task, ref string errorMessage)
         {
             if (string.IsNullOrWhiteSpace(code))
             {
@@ -396,6 +396,10 @@ namespace SessionApp.Services
             CreateGroup,
             EndRound,
             EndGame,
+            SetWinner,
+            SetDraw,
+            SetNoResult,
+            MoveGroup,
         }
 
         public enum ReportOutcomeResult

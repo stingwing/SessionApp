@@ -22,11 +22,13 @@ namespace SessionApp.Controllers
     {
         private readonly RoomCodeService _roomService;
         private readonly IHubContext<RoomsHub> _hubContext;
+        private readonly GameActionService _gameActionService;
 
-        public RoomsController(RoomCodeService roomService, IHubContext<RoomsHub> hubContext)
+        public RoomsController(RoomCodeService roomService, IHubContext<RoomsHub> hubContext, GameActionService gameActionService)
         {
             _roomService = roomService;
             _hubContext = hubContext;
+            _gameActionService = gameActionService;
         }
 
         // Simple test endpoint to verify the service is running
@@ -145,6 +147,20 @@ namespace SessionApp.Controllers
                 session.HostId,
                 session.CreatedAtUtc,
                 session.ExpiresAtUtc,
+                session.Settings.AllowJoinAfterStart,
+                session.Settings.PrioitizeWinners,
+                session.Settings.AllowGroupOfThree,
+                session.Settings.AllowGroupOfFive,
+                session.Settings.FurtherReduceOddsOfGroupOfThree,
+                session.Settings.RoundLength,
+                session.Settings.UsePoints,
+                session.Settings.PointsForWin,
+                session.Settings.PointsForDraw,
+                session.Settings.PointsForLoss,
+                session.Settings.PointsForABye,
+                session.Settings.AllowCustomGroups,
+                session.Settings.TournamentMode,
+                session.Settings.MaxRounds,
                 session.Participants.Count,
                 participants));
         }
@@ -191,6 +207,20 @@ namespace SessionApp.Controllers
                     var sanitizedEventName = InputSanitizer.SanitizeString(request.EventName);
                     session.EventName = InputSanitizer.Truncate(sanitizedEventName, 200);
                 }
+                session.Settings.AllowJoinAfterStart = request.AllowJoinAfterStart;
+                session.Settings.PrioitizeWinners = request.PrioitizeWinners;
+                session.Settings.AllowGroupOfThree = request.AllowGroupOfThree;
+                session.Settings.AllowGroupOfFive = request.AllowGroupOfFive;
+                session.Settings.FurtherReduceOddsOfGroupOfThree = request.FurtherReduceOddsOfGroupOfThree;
+                session.Settings.RoundLength = request.RoundLength;
+                session.Settings.UsePoints = request.UsePoints;
+                session.Settings.PointsForWin = request.PointsForWin;
+                session.Settings.PointsForDraw = request.PointsForDraw;
+                session.Settings.PointsForLoss = request.PointsForLoss;
+                session.Settings.PointsForABye = request.PointsForABye;
+                session.Settings.AllowCustomGroups = request.AllowCustomGroups;
+                session.Settings.TournamentMode = request.TournamentMode;
+                session.Settings.MaxRounds = request.MaxRounds;
             }
 
             // Save settings to database
@@ -229,7 +259,6 @@ namespace SessionApp.Controllers
                 });
             }
 
-            var errorMessage = string.Empty;
             var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
             var sanitizedHostId = InputSanitizer.SanitizeString(request.HostId);
 
@@ -237,12 +266,9 @@ namespace SessionApp.Controllers
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 
-            // Only host may end the session
+            // Only host may perform game actions
             if (!string.Equals(session.HostId, sanitizedHostId, StringComparison.Ordinal))
                 return Forbid();
-
-            // Sanitize player dictionary
-            var sanitizedPlayers = InputSanitizer.SanitizeDictionary(request.Players);
 
             var normalized = InputSanitizer.SanitizeString(request.Result).ToLowerInvariant();
             var task = normalized switch
@@ -255,6 +281,10 @@ namespace SessionApp.Controllers
                 "endround" => HandleRoundOptions.EndRound,
                 "endgame" => HandleRoundOptions.EndGame,
                 "resetround" => HandleRoundOptions.ResetRound,
+                "setwinner" => HandleRoundOptions.SetWinner,
+                "setdraw" => HandleRoundOptions.SetDraw,
+                "setnoresult" => HandleRoundOptions.SetNoResult,
+                "movegroup" => HandleRoundOptions.MoveGroup,
                 _ => HandleRoundOptions.Invalid,
             };
 
@@ -263,90 +293,76 @@ namespace SessionApp.Controllers
                 return BadRequest(new { message = "Invalid game action" });
             }
 
+            // Handle different action types
+            GameActionResult result;
+
             if (task == HandleRoundOptions.StartRound || task == HandleRoundOptions.ResetRound)
             {
-                if (session.Groups is null || session.Groups.Count == 0)
-                    return BadRequest(new { message = "No groups available to start" });
+                result = _gameActionService.HandleStartOrResetRound(session, task);
+                if (!result.IsSuccess)
+                    return BadRequest(new { message = result.ErrorMessage });
 
-                lock (session)
-                {
-                    var currentTime = DateTime.UtcNow;
-                    foreach (var group in session.Groups)
-                    {
-                        if (task == HandleRoundOptions.StartRound)
-                            group.RoundStarted = true;
-                        else if (task == HandleRoundOptions.ResetRound)
-                            group.RoundStarted = false;
-
-                        group.StartedAtUtc = currentTime;
-
-                        foreach (var participant in group.Participants)
-                        {
-                            if(session.Participants.ContainsKey(participant.Key))
-                                participant.Value.Commander = session.Participants[participant.Key].Commander;                             
-                        }
-                    }
-                }
-
-                // Save the updated session to the database
-                var saved = await _roomService.SaveSessionToDatabaseAsync(session);
-                if (!saved)
-                {
-                    return StatusCode(StatusCodes.Status500InternalServerError,
-                        new { message = "Failed to save session to database" });
-                }
-
-                var payload = new
-                {
-                    RoomCode = sanitizedCode,
-                    Round = session.CurrentRound,
-                    StartedAtUtc = DateTime.UtcNow,
-                    RoundLength = session.Settings.RoundLength,
-                    Groups = session.Groups.Select(group => new
-                    {
-                        group.GroupNumber,
-                        group.RoundNumber,
-                        group.RoundStarted,
-                        group.StartedAtUtc,
-                        Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray()
-                    }).ToArray()
-                };
-
-                await _hubContext.Clients.Group(sanitizedCode).SendAsync("RoundStarted", payload);
-                return Ok(payload);
+                await _roomService.SaveSessionToDatabaseAsync(session);
+                return await BroadcastHandleGame(sanitizedCode, session, "RoundStarted");
             }
 
-            //Handle Round
+            if (task == HandleRoundOptions.SetNoResult || task == HandleRoundOptions.SetWinner || task == HandleRoundOptions.SetDraw)
+            {
+                var participantId = InputSanitizer.SanitizeString(request.ParticipantId);
+                result = _gameActionService.HandleSetResult(session, request.GroupNumber, request.RoundNumber, task, participantId);
+
+                if (!result.IsSuccess)
+                    return BadRequest(new { message = result.ErrorMessage });
+
+                await _roomService.SaveSessionToDatabaseAsync(session);
+                return await BroadcastHandleGame(sanitizedCode, session, "ResultsUpdated");
+            }
+
+            if (task == HandleRoundOptions.MoveGroup)
+            {
+                var participantId = InputSanitizer.SanitizeString(request.ParticipantId);
+                result = _gameActionService.HandleMoveParticipant(session, request.GroupNumber, request.MoveGroup, request.RoundNumber, participantId);
+
+                if (!result.IsSuccess)
+                    return BadRequest(new { message = result.ErrorMessage });
+
+                await _roomService.SaveSessionToDatabaseAsync(session);
+                return await BroadcastHandleGame(sanitizedCode, session, "ParticipantMoved");
+            }
+
             if (task == HandleRoundOptions.GenerateRound || task == HandleRoundOptions.GenerateFirstRound || task == HandleRoundOptions.RegenerateRound)
             {
-                var groups = _roomService.HandleRound(sanitizedCode, task, sanitizedPlayers, ref errorMessage);
-                if (groups is null)
-                    return NotFound(new { message = $"Error: {errorMessage}" });
+                result = _gameActionService.HandleGenerateRound(sanitizedCode, task);
 
-                var round = -1;
-                var testGroup = groups.FirstOrDefault();
-                if (groups.Any() && testGroup != null)
-                    round = testGroup.RoundNumber;
+                if (!result.IsSuccess)
+                    return NotFound(new { message = result.ErrorMessage });
 
-                var payload = new
-                {
-                    RoomCode = sanitizedCode,
-                    Round = round,
-                    Groups = groups.Select(group => new
-                    {
-                        GroupNumber = group.GroupNumber,
-                        RoundNumber = group.RoundNumber,
-                        RoundStarted = group.RoundStarted,
-                        Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray()
-                    }).ToArray()
-                };
-
-                // Broadcast game update to clients in the room group
-                await _hubContext.Clients.Group(sanitizedCode).SendAsync("RoundGenerated", payload);
-                return Ok(payload);
+                return await BroadcastHandleGame(sanitizedCode, session, "RoundGenerated");
             }
 
             return BadRequest(new { message = "Invalid game action" });
+        }
+
+        private async Task<IActionResult> BroadcastHandleGame(string code, RoomSession session, string method)
+        {
+            var payload = new
+            {
+                RoomCode = code,
+                Round = session.CurrentRound,
+                StartedAtUtc = DateTime.UtcNow,
+                RoundLength = session.Settings.RoundLength,
+                Groups = session.Groups!.Select(group => new
+                {
+                    group.GroupNumber,
+                    group.RoundNumber,
+                    group.RoundStarted,
+                    group.StartedAtUtc,
+                    Members = group.ParticipantsOrdered.Select(p => new { p.Id, p.Name, p.Commander, p.Points, p.JoinedAtUtc }).ToArray()
+                }).ToArray()
+            };
+
+            await _hubContext.Clients.Group(code).SendAsync(method, payload);
+            return Ok(payload);
         }
 
         // GET api/rooms/{code}/current
@@ -734,7 +750,21 @@ namespace SessionApp.Controllers
         string HostId,
         DateTime CreatedAtUtc,
         DateTime ExpiresAtUtc,
-        int ParticipantCount,
+        bool AllowJoinAfterStart,
+        bool PrioitizeWinners,
+        bool AllowGroupOfThree,
+        bool AllowGroupOfFive,
+        bool FurtherReduceOddsOfGroupOfThree,
+        int RoundLength,
+        bool UsePoints,
+        int PointsForWin,
+        int PointsForDraw,
+         int PointsForLoss,
+         int PointsForABye,
+         bool AllowCustomGroups,
+         bool TournamentMode,
+         int MaxRounds,
+                int ParticipantCount,
         RoomParticipant[] Participants
     );
 
@@ -748,9 +778,20 @@ namespace SessionApp.Controllers
 
         [Range(3, 6, ErrorMessage = "MaxGroupSize must be between 3 and 6")]
         int MaxGroupSize = 4,
-
         bool AllowJoinAfterStart = false,
-        bool AllowSpectators = true
+        bool PrioitizeWinners = true,
+        bool AllowGroupOfThree = true,
+        bool AllowGroupOfFive = true,
+        bool FurtherReduceOddsOfGroupOfThree = true,
+        int RoundLength = 90,
+        bool UsePoints = false,
+        int PointsForWin = 1,
+        int PointsForDraw = 0,
+        int PointsForLoss = 0,
+        int PointsForABye = 1,
+        bool AllowCustomGroups = false,
+        bool TournamentMode = false,
+        int MaxRounds = 10000
     );
 
     public record EndSessionRequest(
@@ -768,7 +809,11 @@ namespace SessionApp.Controllers
         [SafeString(MinLength = 3, MaxLength = 100)]
         string HostId,
 
-        [DictionarySizeLimit(MaxKeys = 100, MaxValueLength = 1000)]
-        Dictionary<string, object> Players
+        [SafeString(MinLength = 1, MaxLength = 100)]
+        string ParticipantId,
+
+        int GroupNumber,
+        int RoundNumber,
+        int MoveGroup
     );
 }

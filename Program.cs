@@ -180,7 +180,7 @@ builder.Services.AddDbContext<SessionDbContext>(options =>
 
 // Register repository  
 builder.Services.AddScoped<SessionRepository>();
-
+builder.Services.AddScoped<GameActionService>();
 // Register room/session service as singleton without repository dependency
 // Repository will be resolved per-request via IServiceProvider
 builder.Services.AddSingleton<RoomCodeService>();
