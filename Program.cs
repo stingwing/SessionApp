@@ -1,17 +1,45 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using SessionApp.Data;
 using SessionApp.Hubs;
 using SessionApp.Services;
+using System.IO.Compression;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// Add Response Compression with Brotli
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true; // Safe to enable for modern HTTPS connections
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    
+    // Specify MIME types to compress
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(
+        new[] { "application/json", "text/json", "text/plain" });
+});
+
+// Configure Brotli compression level
+builder.Services.Configure<BrotliCompressionProviderOptions>(options =>
+{
+    // Fastest = best for real-time apps, lower CPU usage
+    // Optimal = better compression, higher CPU usage
+    options.Level = CompressionLevel.Fastest;
+});
+
+// Configure Gzip compression level (fallback for older browsers)
+builder.Services.Configure<GzipCompressionProviderOptions>(options =>
+{
+    options.Level = CompressionLevel.Fastest;
+});
 
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
@@ -268,6 +296,9 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = "swagger";
 });
 //}
+
+// IMPORTANT: Response compression must be early in the pipeline
+app.UseResponseCompression();
 
 app.UseHttpsRedirection();
 app.UseCors("AllowAll");
