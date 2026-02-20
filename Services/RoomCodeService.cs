@@ -48,7 +48,7 @@ namespace SessionApp.Services
             // Load existing sessions from database on startup
             if (_serviceProvider != null)
             {
-                _ = LoadSessionsFromDatabaseAsync();
+            //    _ = LoadSessionsFromDatabaseAsync();
             }
         }
 
@@ -58,13 +58,17 @@ namespace SessionApp.Services
             {
                 using var scope = _serviceProvider!.CreateScope();
                 var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
-                var sessions = await repository.GetAllSessionsAsync();
+                //    var sessions = await repository.GetAllSessionsAsync();
+                var sessions = await repository.GetAllActiveSessionsAsync();
                 foreach (var session in sessions)
                 {
                     _sessions[session.Code.ToUpperInvariant()] = session;
 
                     if (session.ExpiresAtUtc <= DateTime.UtcNow && !session.IsGameEnded)
-                        CleanupExpiredSession(session.Code);
+                    {
+                        CleanupExpiredSession(session);
+                        SaveSessionToDatabaseFireAndForget(session);
+                    }
                 }
             }
             catch (Exception)
@@ -224,6 +228,13 @@ namespace SessionApp.Services
                 if (dbSession != null )// && !dbSession.IsExpiredUtc())
                 {
                     _sessions[key] = dbSession;
+
+                    if (dbSession.ExpiresAtUtc <= DateTime.UtcNow && !dbSession.IsGameEnded)
+                    {
+                        CleanupExpiredSession(dbSession);
+                        SaveSessionToDatabaseFireAndForget(dbSession);
+                    }
+
                     return dbSession;
                 }
             }
@@ -278,7 +289,7 @@ namespace SessionApp.Services
 
             lock (session)
             {
-                var participants = session.Participants.Values.ToList();
+                var participants = session.Participants.Values.Where(x => !x.Dropped).ToList();
                 if (!participants.Any())
                 {
                     errorMessage = "Game has no players";
@@ -291,8 +302,7 @@ namespace SessionApp.Services
                     return null;
                 }
 
-                // FIXED: Archive current round BEFORE generating the next one
-                // This ensures Round 1 is archived before Round 2 is created
+                // Archive current round BEFORE generating the next one
                 if (session.Groups != null && session.Groups.Count > 0)
                 {
                     // Check if we're starting a new round (not just regenerating the current one)
@@ -305,7 +315,7 @@ namespace SessionApp.Services
                         }
 
                         var snapshotGroups = SnapshotGroups(session.Groups);
-                        session.ArchivedRounds.Add(snapshotGroups);
+                        session.ArchivedRounds.Add(snapshotGroups);                   
                     }
                 }
 
@@ -316,7 +326,15 @@ namespace SessionApp.Services
                         session.CurrentRound++;
                 }
 
-                var groups = _groupGenerationService.RanzomizeRound(participants, session, Array.Empty<Group>(), task);
+                var groups = new List<Group>();
+                if (session.Settings.AllowCustomGroups && participants.Any(x => x.InCustomGroup != Guid.Empty))
+                {
+                    groups = _groupGenerationService.RandomizeRoundIncludeCustom(participants, session, Array.Empty<Group>(), task);
+                }
+                else
+                {
+                    groups = _groupGenerationService.RandomizeRound(participants, session, Array.Empty<Group>(), task);
+                }
 
                 session.Groups = Array.AsReadOnly(groups.ToArray());
                 session.IsGameStarted = true;
@@ -329,7 +347,7 @@ namespace SessionApp.Services
             }
         }
 
-        public IReadOnlyList<Group> SnapshotGroups(IReadOnlyList<Group> groups)
+        public static IReadOnlyList<Group> SnapshotGroups(IReadOnlyList<Group> groups)
         {
             var snapshot = new List<Group>(groups.Count);
             foreach (var g in groups)
@@ -348,8 +366,8 @@ namespace SessionApp.Services
                     Statistics = new Dictionary<string, object>(g.Statistics) // Deep copy
                 };
 
-                // Copy participants using AddParticipant to preserve order
-                foreach (var p in g.ParticipantsOrdered)
+                // Copy participants ordered by Order property
+                foreach (var p in g.Participants.Values.OrderBy(p => p.Order))
                 {
                     copy.AddParticipant(p);
                 }
@@ -400,6 +418,10 @@ namespace SessionApp.Services
             SetDraw,
             SetNoResult,
             MoveGroup,
+            CreateCustomGroup,
+            DeleteCustomGroup,
+            CreateCustomGroupPlayer,
+            DeleteCustomGroupPlayer,
         }
 
         public enum ReportOutcomeResult
@@ -410,6 +432,7 @@ namespace SessionApp.Services
             AlreadyEnded, // group already has a result
             ParticipantNotFound,
             Invalid,
+            RoundStarted
         }
 
         /// <summary>
@@ -441,30 +464,20 @@ namespace SessionApp.Services
 
             lock (session)
             {
-                //if (!session.IsGameStarted || session.Groups is null)
-                //    return ReportOutcomeResult.NotStarted;
-
-              //  if(session.IsGameEnded)
-             //       return ReportOutcomeResult.AlreadyEnded;
-
                 // Handle DropOut (remove from active participants)
                 if (outcome == ReportOutcomeType.DropOut)
                 {
                     if (session.HasAnyRoundStarted())
-                        return ReportOutcomeResult.Invalid;
+                        return ReportOutcomeResult.RoundStarted;
 
-                    if (session.Participants.TryRemove(participantId, out var removed))
-                    {
-                        removedParticipant = removed;
-                        
-                        // Save to database (fire and forget)
-                        SaveSessionToDatabaseFireAndForget(session);
+                    var participant = session.Participants.Values.FirstOrDefault(x => x.Id == participantId);
 
-                        ParticipantDropped?.Invoke(session, removed);
-                        return ReportOutcomeResult.Success;
-                    }
-
-                    return ReportOutcomeResult.ParticipantNotFound;
+                    if (participant is null)             
+                        return ReportOutcomeResult.ParticipantNotFound;
+                                                 
+                    participant.Dropped = !participant.Dropped;
+                    SaveSessionToDatabaseFireAndForget(session);
+                    return ReportOutcomeResult.Success;
                 }
 
                 //Update commander going forward
@@ -482,7 +495,7 @@ namespace SessionApp.Services
                 if(currentGroup.CompletedAtUtc == null)
                     currentGroup.CompletedAtUtc = DateTime.UtcNow;
                 // Maintain existing external contract: groupIndex is zero-based index into session.Groups
-                groupIndex = currentGroup.GroupNumber - 1;
+                groupIndex = currentGroup.GroupNumber;
                 if (groupIndex < 0)
                     groupIndex = null;
 
@@ -495,6 +508,31 @@ namespace SessionApp.Services
                 {
                     foreach (var stat in statistics)
                     {
+                        if (stat.Key == "PlayerOrder")
+                        {
+                            // PlayerOrder format: "participantId1, participantId2, participantId3, ..."
+                            // The position in the comma-separated list represents the order (1-based)
+                            if (stat.Value is string playerOrderString && !string.IsNullOrWhiteSpace(playerOrderString))
+                            {
+                                var orderedIds = playerOrderString
+                                    .Split(',')
+                                    .Select(id => id.Trim())
+                                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                                    .ToList();
+
+                                for (int i = 0; i < orderedIds.Count; i++)
+                                {
+                                    var playerId = orderedIds[i];
+                                    if (currentGroup.Participants.ContainsKey(playerId))
+                                    {
+                                        currentGroup.Participants[playerId].Order = i + 1; // 1-based order
+                                    }
+                                }
+                            }
+                        }
+
+
+
                         currentGroup.Statistics[stat.Key] = stat.Value;
                     }
                 }
@@ -574,13 +612,9 @@ namespace SessionApp.Services
         /// Unlike EndSession in the controller, this doesn't require host authorization and is intended for expired sessions.
         /// Returns true if the session was found and cleaned up, false otherwise.
         /// </summary>
-        public bool CleanupExpiredSession(string code)
+        public static bool CleanupExpiredSession(RoomSession session)
         {
-            if (string.IsNullOrWhiteSpace(code))
-                return false;
-
-            var key = code.ToUpperInvariant();
-            if (!_sessions.TryGetValue(key, out var session))
+            if (session == null)
                 return false;
 
             // Check if session has expired
@@ -596,11 +630,9 @@ namespace SessionApp.Services
                 }
 
                 session.Archived = true;
-                session.IsGameEnded = true;  
+                session.IsGameEnded = true;
+                session.Groups = new List<Group>();
             }
-
-            // Save to database (fire and forget)
-            SaveSessionToDatabaseFireAndForget(session);
 
             return true;
         }

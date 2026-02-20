@@ -33,6 +33,8 @@ namespace SessionApp.Data.Entities
         public SessionEntity Session { get; set; } = null!;
         public string Commander { get; set; } = string.Empty;
         public int Points { get; set; } = 0;
+        public bool Dropped { get; set; } = false;
+        public Guid InCustomGroup { get; set; } = Guid.Empty;
     }
 
     public class GroupEntity
@@ -67,8 +69,9 @@ namespace SessionApp.Data.Entities
         public string ParticipantId { get; set; } = null!;
         public string Name { get; set; } = null!;
         public DateTime JoinedAtUtc { get; set; }
-
+        public int Order { get; set; } = 0;  
         public GroupEntity Group { get; set; } = null!;
+        public bool AutoFill { get; set; } = false;
     }
 
     public class ArchivedRoundEntity
@@ -78,7 +81,7 @@ namespace SessionApp.Data.Entities
         public int RoundNumber { get; set; }       
         // Common statistics
         public DateTime? CompletedAtUtc { get; set; }
-        public string Commander { get; set; } = string.Empty; // remove this
+        public string Commander { get; set; } = string.Empty;
         public int TurnCount { get; set; } = -1;
         // Custom/flexible statistics
         public string StatisticsJson { get; set; } = "{}";

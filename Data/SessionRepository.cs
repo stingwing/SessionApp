@@ -77,7 +77,9 @@ namespace SessionApp.Data
                         Name = participant.Name,
                         Commander = participant.Commander,
                         Points = participant.Points,
-                        JoinedAtUtc = participant.JoinedAtUtc
+                        JoinedAtUtc = participant.JoinedAtUtc,
+                        Dropped = participant.Dropped,
+                        InCustomGroup = participant.InCustomGroup
                     });
                 }
                 else
@@ -86,6 +88,8 @@ namespace SessionApp.Data
                     existing.Name = participant.Name;
                     existing.Commander = participant.Commander;
                     existing.Points = participant.Points;
+                    existing.Dropped = participant.Dropped;
+                    existing.InCustomGroup = participant.InCustomGroup;
                 }
             }
 
@@ -152,14 +156,17 @@ namespace SessionApp.Data
                 var group = groups[i];
                 var groupEntity = groupEntities[i];
 
-                foreach (var participant in group.ParticipantsOrdered)
+                // Order by Participant.Order property
+                foreach (var participant in group.Participants.Values.OrderBy(p => p.Order))
                 {
                     _context.GroupParticipants.Add(new GroupParticipantEntity
                     {
                         GroupId = groupEntity.Id,
                         ParticipantId = participant.Id,
                         Name = participant.Name,
-                        JoinedAtUtc = participant.JoinedAtUtc
+                        JoinedAtUtc = participant.JoinedAtUtc,
+                        Order = participant.Order,
+                        AutoFill = participant.AutoFill
                     });
                 }
             }
@@ -323,7 +330,9 @@ namespace SessionApp.Data
                     Name = p.Name,
                     Commander = p.Commander,
                     Points = p.Points,
-                    JoinedAtUtc = p.JoinedAtUtc
+                    JoinedAtUtc = p.JoinedAtUtc,
+                    Dropped = p.Dropped,
+                    InCustomGroup = p.InCustomGroup,
                 };
             }
 
@@ -336,18 +345,18 @@ namespace SessionApp.Data
                     if (group.IsArchived)
                         continue;
 
-                    groupsList.Add(MapGroup(group));
+                    groupsList.Add(MapGroup(group, session, false));
                 }
                 session.Groups = groupsList.AsReadOnly();
             }
-        
+
             // Load archived rounds
             foreach (var archivedRound in entity.ArchivedRounds.OrderBy(a => a.RoundNumber))
             {
                 var archived = archivedRound.Groups
                     .Where(g => g.IsArchived)
                     .OrderBy(g => g.GroupNumber)
-                    .Select(g => MapGroup(g))
+                    .Select(g => MapGroup(g, session, true))
                     .ToList()
                     .AsReadOnly();
 
@@ -357,7 +366,7 @@ namespace SessionApp.Data
             return session;
         }
 
-        private Group MapGroup(GroupEntity entity)
+        private Group MapGroup(GroupEntity entity, RoomSession session, bool archive)
         {
             var group = new Group
             {
@@ -373,15 +382,32 @@ namespace SessionApp.Data
             // Load statistics from JSON
             group.SetStatisticsFromJson(entity.StatisticsJson);
 
-            // Use AddParticipant to maintain order from database
-            foreach (var p in entity.GroupParticipants.OrderBy(gp => gp.JoinedAtUtc))
+            // Load participants ordered by Order property
+            foreach (var p in entity.GroupParticipants.OrderBy(gp => gp.Order))
             {
-                group.AddParticipant(new Participant
+                var participant = new Participant
                 {
                     Id = p.ParticipantId,
                     Name = p.Name,
-                    JoinedAtUtc = p.JoinedAtUtc
-                });
+                    JoinedAtUtc = p.JoinedAtUtc,
+                    Order = p.Order,   
+                    AutoFill = p.AutoFill
+                };
+
+                session.Participants.TryGetValue(p.ParticipantId, out var sessionParticipant);
+
+                if (sessionParticipant != null) 
+                {
+                    if (!archive)
+                    {
+                        sessionParticipant.Order = participant.Order;
+                    }
+                    sessionParticipant.AutoFill = participant.AutoFill; // this is likely incorrect for archived rounds, but we don't have a way to store it currently
+                    participant.Commander = sessionParticipant.Commander; // this should probably get the commander from statistics for archived rounds
+                    participant.InCustomGroup = sessionParticipant.InCustomGroup; // this is likely incorrect 
+                }
+
+                group.AddParticipant(participant);         
             }
 
             return group;

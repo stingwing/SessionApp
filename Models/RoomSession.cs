@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Connections;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Data.SqlTypes;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -75,9 +76,11 @@ namespace SessionApp.Models
         public int PointsForDraw { get; set; } = 0;
         public int PointsForLoss { get; set; } = 0;
         public int PointsForABye { get; set; } = 1;
-        public bool AllowCustomGroups { get; set; } = false;
+        public bool AllowCustomGroups { get; set; } = true;
+        public bool AllowPlayersToCreateCustomGroups { get; set; } = true;
         public bool TournamentMode { get; set; } = false;
         public int MaxRounds { get; set; } = 10000;
+        public int MaxGroupSize { get; set; } = 4;
     }
 
     public class Participant
@@ -87,6 +90,10 @@ namespace SessionApp.Models
         public DateTime JoinedAtUtc { get; init; } = DateTime.UtcNow;
         public string Commander { get; set; } = string.Empty;
         public int Points { get; set; } = 0;
+        public bool Dropped { get; set; } = false;
+        public int Order { get; set; } = 0;
+        public Guid InCustomGroup { get; set; } = Guid.Empty;
+        public bool AutoFill { get; set; } = false;
     }
 
     // Represents a single group (up to 4 participants) and its per-round state.
@@ -94,29 +101,23 @@ namespace SessionApp.Models
     {
         public int GroupNumber { get; set; }
         
-        // Use a List to preserve order + dictionary for fast lookup
-        private List<Participant> _participantsList = new();
+        // Dictionary for fast lookup - order is maintained via Participant.Order property
         private ConcurrentDictionary<string, Participant> _participantsDict = new();
         
-        public IReadOnlyList<Participant> ParticipantsOrdered => _participantsList.AsReadOnly();
         public ConcurrentDictionary<string, Participant> Participants => _participantsDict;
 
         public void AddParticipant(Participant participant)
         {
             if (_participantsDict.TryAdd(participant.Id, participant))
             {
-                _participantsList.Add(participant);
+                // Set order based on current count
+                participant.Order = _participantsDict.Count - 1;
             }
         }
 
         public bool RemoveParticipant(string participantId)
         {
-            if (_participantsDict.TryRemove(participantId, out var participant))
-            {
-                _participantsList.Remove(participant);
-                return true;
-            }
-            return false;
+            return _participantsDict.TryRemove(participantId, out _);
         }
 
         // Round number this group belongs to
@@ -130,6 +131,13 @@ namespace SessionApp.Models
 
         // Indicates whether the round has been started
         public bool RoundStarted { get; set; } = false;
+        
+        // Indicates if this is a custom group created by the host
+        public bool IsCustom { get; set; } = false;
+        
+        // If true and IsCustom is true, this group of 3 can be auto-filled to 4 during randomization
+        public bool AutoFill { get; set; } = false;
+        
         // Fixed statistics for queryability
         public DateTime? StartedAtUtc { get; set; }
         public DateTime? CompletedAtUtc { get; set; }

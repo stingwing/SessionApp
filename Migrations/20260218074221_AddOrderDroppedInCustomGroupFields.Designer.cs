@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using SessionApp.Data;
@@ -11,9 +12,11 @@ using SessionApp.Data;
 namespace SessionApp.Migrations
 {
     [DbContext(typeof(SessionDbContext))]
-    partial class SessionDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260218074221_AddOrderDroppedInCustomGroupFields")]
+    partial class AddOrderDroppedInCustomGroupFields
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -165,9 +168,6 @@ namespace SessionApp.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<bool>("AutoFill")
-                        .HasColumnType("boolean");
-
                     b.Property<Guid>("GroupId")
                         .HasColumnType("uuid");
 
@@ -210,8 +210,8 @@ namespace SessionApp.Migrations
                     b.Property<bool>("Dropped")
                         .HasColumnType("boolean");
 
-                    b.Property<Guid>("InCustomGroup")
-                        .HasColumnType("uuid");
+                    b.Property<bool>("InCustomGroup")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTime>("JoinedAtUtc")
                         .HasColumnType("timestamp with time zone");

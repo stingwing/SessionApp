@@ -124,6 +124,102 @@ namespace SessionApp.Services
             return GameActionResult.SuccessWithRound(groups, round);
         }
 
+        public GameActionResult HandleCreateCustomGroup(RoomSession session, List<string> participantIds, bool autoFill)
+        {
+            if (!session.Settings.AllowCustomGroups)
+                return GameActionResult.Error("Custom groups are not allowed for this session");
+
+            if (participantIds == null || !participantIds.Any())
+                return GameActionResult.Error("Custom groups have at least one Player");
+
+            if (session.HasAnyRoundStarted())
+                return GameActionResult.Error("Cannot create custom groups after the round has started");
+
+            var existingCustomGroupGUID = new List<Guid>();
+
+            lock (session)
+            {
+                // Verify all participants exist in the session
+                var participants = new List<Participant>();
+                foreach (var id in participantIds)
+                {
+                    if (!session.Participants.ContainsKey(id))
+                        return GameActionResult.Error($"Participant {id} not found in session");
+
+                    participants.Add(session.Participants[id]);
+                }
+
+                // Create new custom group with a unique Guid
+                var customGroupGuid = Guid.NewGuid();
+                foreach (var participant in participants)
+                {
+                    // Set the InCustomGroup field on the participant in the session
+                    if (session.Participants.TryGetValue(participant.Id, out var sessionParticipant))
+                    {
+                        sessionParticipant.InCustomGroup = customGroupGuid;
+                        sessionParticipant.AutoFill = autoFill;
+                    }
+                }
+
+                // Identify custom groups that now have only 1 participant
+                var singleParticipantGroupIds = session.Participants.Values
+                    .Where(p => p.InCustomGroup != Guid.Empty && p.InCustomGroup != customGroupGuid)
+                    .GroupBy(p => p.InCustomGroup)
+                    .Where(g => g.Count() == 1)
+                    .Select(g => g.Key)
+                    .ToList();
+
+                // Delete single-participant custom groups
+                foreach (var groupId in singleParticipantGroupIds)
+                {
+                    HandleDeleteCustomGroup(session, groupId);
+                }
+            }
+
+            return GameActionResult.Success(session.Groups);
+        }
+
+        public GameActionResult HandleDeleteCustomGroup(RoomSession session, Guid inCustomGroupId)
+        {
+            //if (session.Groups is null || session.Groups.Count == 0)
+            //    return GameActionResult.Error("No groups available");
+
+            //if (!session.Settings.AllowCustomGroups)
+            //    return GameActionResult.Error("Custom groups are not allowed for this session");
+
+            if (session.HasAnyRoundStarted())
+                return GameActionResult.Error("Cannot delete custom groups after the round has started");
+
+            lock (session)
+            {
+                foreach (var participant in session.Participants.Values.Where(p => p.InCustomGroup == inCustomGroupId))
+                {
+                    participant.AutoFill = false; // Set AutoFill flag for participant
+                    participant.InCustomGroup = Guid.Empty; // Clear InCustomGroup flag for participant before checking existing groups
+
+                    if (session.Groups == null)
+                        continue;
+
+                    foreach (var existingGroup in session.Groups.ToList())
+                    {
+                        if (existingGroup.Participants.ContainsKey(participant.Id))
+                        {
+                            participant.InCustomGroup = Guid.Empty; // Clear InCustomGroup flag for participant
+                            participant.AutoFill = false; // Clear AutoFill flag for participant
+                        }
+                    }
+                }
+            }
+
+            return GameActionResult.Success(session.Groups);
+        }
+
+        public bool EndRound(RoomSession session)
+        {
+            RoomCodeService.CleanupExpiredSession(session);
+            return true;
+        }
+
         private Group? FindGroupInArchivedRounds(RoomSession session, int groupNumber, int roundNumber)
         {
             foreach (var archivedRound in session.ArchivedRounds)

@@ -189,6 +189,7 @@ builder.Services.AddSingleton<RoomCodeService>();
 builder.Services.AddHttpClient<ScryfallService>(client =>
 {
     client.DefaultRequestHeaders.Add("User-Agent", "SessionApp/1.0 (t.i.mollenhauer@gmail.com)");
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
 });
 
 // Register the Commander Sync Hosted Service
