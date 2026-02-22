@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using SessionApp.Models;
 
 namespace SessionApp.Data.Entities
 {
@@ -10,6 +11,7 @@ namespace SessionApp.Data.Entities
         public string HostId { get; set; } = null!;
         public DateTime CreatedAtUtc { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
+        public GameState GameState { get; set; } = GameState.Invalid;
         public bool IsGameStarted { get; set; }
         public bool IsGameEnded { get; set; }
         public bool Archived { get; set; } = false;

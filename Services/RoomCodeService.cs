@@ -16,8 +16,13 @@ namespace SessionApp.Services
         private const string AllowedChars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
         private readonly RandomNumberGenerator _rng = RandomNumberGenerator.Create();
         private readonly ConcurrentDictionary<string, RoomSession> _sessions = new();
+        private List<SessionSummary> _cachedSummaries = new();
+        private DateTime _summariesLastRefreshed = DateTime.MinValue;
+        private readonly TimeSpan _summariesCacheLifetime = TimeSpan.FromMinutes(5);
+        private readonly SemaphoreSlim _summariesCacheLock = new(1, 1);
         private readonly Timer _cleanupTimer;
         private readonly TimeSpan _cleanupInterval = TimeSpan.FromMinutes(5);
+        private readonly TimeSpan _inactivityThreshold = TimeSpan.FromHours(8);
         private bool _disposed;
 
         private readonly IServiceProvider? _serviceProvider;
@@ -109,6 +114,8 @@ namespace SessionApp.Services
             if (_serviceProvider == null)
                 return;
 
+            session.LastModifiedAtUtc = DateTime.UtcNow;
+
             _ = Task.Run(async () =>
             {
                 try
@@ -144,7 +151,8 @@ namespace SessionApp.Services
                     Code = code,
                     HostId = hostId,
                     CreatedAtUtc = now,
-                    ExpiresAtUtc = now.Add(ttl.Value)
+                    ExpiresAtUtc = now.Add(ttl.Value),
+                    LastModifiedAtUtc = now // Add this
                 };
 
                 if (_sessions.TryAdd(key, session))
@@ -158,7 +166,7 @@ namespace SessionApp.Services
             throw new InvalidOperationException("Unable to generate a unique room code. Try increasing code length.");
         }
 
-        public string TryJoin(string code, string participantId, string participantName = "", string commander = "")
+        public string TryJoin(RoomSession session,string code, string participantId, string participantName = "", string commander = "")
         {
             if (string.IsNullOrWhiteSpace(code))
                 return $"Code Doesn't Exist";
@@ -168,10 +176,8 @@ namespace SessionApp.Services
 
             if (participantName == string.Empty)
                 participantName = participantId;
-
+               
             var key = code.ToUpperInvariant();
-            if (!_sessions.TryGetValue(key, out var session))
-                return "Session is invalid";
 
             if (session.IsExpiredUtc())
                 return "Session has expired";
@@ -195,6 +201,7 @@ namespace SessionApp.Services
                 return $"A user with the id {participantId} is already in the game";
 
             session.Participants.AddOrUpdate(participantId, participant, (_, __) => participant);
+            session.LastModifiedAtUtc = DateTime.UtcNow; // Add this
             
             // Save to database (fire and forget)
             SaveSessionToDatabaseFireAndForget(session);
@@ -225,8 +232,10 @@ namespace SessionApp.Services
                 using var scope = _serviceProvider.CreateScope();
                 var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
                 var dbSession = await repository.LoadSessionAsync(key);
-                if (dbSession != null )// && !dbSession.IsExpiredUtc())
+                if (dbSession != null)
                 {
+                    // Update LastModifiedAtUtc when loading from DB to reset inactivity timer
+                    dbSession.LastModifiedAtUtc = DateTime.UtcNow;
                     _sessions[key] = dbSession;
 
                     if (dbSession.ExpiresAtUtc <= DateTime.UtcNow && !dbSession.IsGameEnded)
@@ -262,9 +271,26 @@ namespace SessionApp.Services
             var now = DateTime.UtcNow;
             foreach (var kv in _sessions.ToArray())
             {
-                if (kv.Value.ExpiresAtUtc <= now)
+                var session = kv.Value;
+                var shouldRemove = false;
+                
+                // Remove if expired
+                if (session.ExpiresAtUtc <= now)
                 {
-                    if (_sessions.TryRemove(kv.Key, out var removed))
+                    shouldRemove = true;
+                }
+                // Remove if inactive for 8+ hours (but keep in database)
+                else if (now - session.LastModifiedAtUtc >= _inactivityThreshold)
+                {
+                    shouldRemove = true;
+                    // Save to database before removing from memory
+                    SaveSessionToDatabaseFireAndForget(session);
+                }
+
+                if (shouldRemove && _sessions.TryRemove(kv.Key, out var removed))
+                {
+                    // Only invoke SessionExpired for truly expired sessions, not just inactive ones
+                    if (session.ExpiresAtUtc <= now)
                     {
                         SessionExpired?.Invoke(removed);
                     }
@@ -446,7 +472,7 @@ namespace SessionApp.Services
         /// - removedParticipant: set for DropOut
         /// - groupIndex: zero-based index of group affected (set for Win/Draw when participant belongs to a group)
         /// </summary>
-        public ReportOutcomeResult ReportOutcome(string code, string participantId, ReportOutcomeType outcome, string commander, Dictionary<string, object> statistics, out string? winnerParticipantId, out Participant? removedParticipant, out int? groupIndex)
+        public ReportOutcomeResult ReportOutcome(RoomSession session, string code, string participantId, ReportOutcomeType outcome, string commander, Dictionary<string, object> statistics, out string? winnerParticipantId, out Participant? removedParticipant, out int? groupIndex)
         {
             winnerParticipantId = null;
             removedParticipant = null;
@@ -454,10 +480,6 @@ namespace SessionApp.Services
 
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(participantId))
                 return ReportOutcomeResult.Invalid;
-
-            var key = code.ToUpperInvariant();
-            if (!_sessions.TryGetValue(key, out var session) || session.IsExpiredUtc())
-                return ReportOutcomeResult.RoomNotFound;
 
             if (session.Groups == null)
                 return ReportOutcomeResult.Invalid;
@@ -671,12 +693,72 @@ namespace SessionApp.Services
             return memorySessions;
         }
 
+        public async Task<List<SessionSummary>> GetAllSessionSummariesAsync()
+        {
+            var now = DateTime.UtcNow;
+            
+            // Return cached data if it's still fresh
+            if (now - _summariesLastRefreshed < _summariesCacheLifetime && _cachedSummaries.Count > 0)
+            {
+                return _cachedSummaries;
+            }
+
+            // Use semaphore to prevent multiple concurrent refreshes
+            await _summariesCacheLock.WaitAsync();
+            try
+            {
+                // Double-check after acquiring lock
+                if (now - _summariesLastRefreshed < _summariesCacheLifetime && _cachedSummaries.Count > 0)
+                {
+                    return _cachedSummaries;
+                }
+
+                if (_serviceProvider != null)
+                {
+                    try
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                        _cachedSummaries = await repository.GetAllSessionSummariesAsync();
+                        _summariesLastRefreshed = now;
+                        return _cachedSummaries;
+                    }
+                    catch (Exception)
+                    {
+                        // On error, return stale cache if available, otherwise empty list
+                        return _cachedSummaries.Count > 0 ? _cachedSummaries : new List<SessionSummary>();
+                    }
+                }
+
+                // If no database, create summaries from in-memory sessions
+                _cachedSummaries = _sessions.Values.Select(s => new SessionSummary
+                {
+                    Code = s.Code,
+                    EventName = s.EventName,
+                    CreatedAtUtc = s.CreatedAtUtc,
+                    ExpiresAtUtc = s.ExpiresAtUtc,
+                    IsGameStarted = s.IsGameStarted,
+                    IsGameEnded = s.IsGameEnded,
+                    Archived = s.Archived,
+                    ParticipantCount = s.Participants.Count
+                }).ToList();
+                
+                _summariesLastRefreshed = now;
+                return _cachedSummaries;
+            }
+            finally
+            {
+                _summariesCacheLock.Release();
+            }
+        }
+
         public void Dispose()
         {
             if (_disposed) return;
             _disposed = true;
             _rng.Dispose();
             _cleanupTimer.Dispose();
+            _summariesCacheLock.Dispose();
         }
     }
 }

@@ -439,7 +439,6 @@ namespace SessionApp.Data
                 {
                     Code = s.Code,
                     EventName = s.EventName,
-                    HostId = s.HostId,
                     CreatedAtUtc = s.CreatedAtUtc,
                     ExpiresAtUtc = s.ExpiresAtUtc,
                     IsGameStarted = s.IsGameStarted,

@@ -101,8 +101,11 @@ namespace SessionApp.Controllers
             {
                 return BadRequest(new { message = "ParticipantId cannot be empty" });
             }
+            var session = await _roomService.GetSessionAsync(sanitizedCode);
+            if (session is null)
+                return NotFound(new { message = "Room not found or expired" });
 
-            var ok = _roomService.TryJoin(sanitizedCode, sanitizedParticipantId, sanitizedParticipantName, sanitizedCommander);
+            var ok = _roomService.TryJoin(session, sanitizedCode, sanitizedParticipantId, sanitizedParticipantName, sanitizedCommander);
 
             if (!ok.Contains("Success"))
                 return NotFound(new { message = ok });
@@ -177,7 +180,7 @@ namespace SessionApp.Controllers
 
             var session = await _roomService.GetSessionAsync(sanitizedCode);
             if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
+                return NotFound(new { message = "Room not found" });
 
             // Simple authorization: only the host may change settings
             if (!string.Equals(session.HostId, sanitizedHostId, StringComparison.Ordinal))
@@ -256,9 +259,7 @@ namespace SessionApp.Controllers
 
             var session = await _roomService.GetSessionAsync(sanitizedCode);
             if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
-
-
+                return NotFound(new { message = "Room not found" });
 
             var normalized = InputSanitizer.SanitizeString(request.Result).ToLowerInvariant();
             var task = normalized switch
@@ -441,7 +442,7 @@ namespace SessionApp.Controllers
             var session = await _roomService.GetSessionAsync(sanitizedCode);
 
             if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
+                return NotFound(new { message = "Room not found" });
 
             if (!session.IsGameStarted || session.Groups is null)
                 return NotFound(new { message = "Game has not been started for this room" });
@@ -472,7 +473,7 @@ namespace SessionApp.Controllers
 
             var session = await _roomService.GetSessionAsync(sanitizedCode);
             if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
+                return NotFound(new { message = "Room not found" });
 
             if (!session.IsGameStarted || session.Groups is null)
                 return NoContent();
@@ -524,7 +525,7 @@ namespace SessionApp.Controllers
             var session = await _roomService.GetSessionAsync(sanitizedCode);
 
             if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
+                return NotFound(new { message = "Room not found" });
 
             var rounds = session.ArchivedRounds
                 .Select(roundGroups => roundGroups.ToRoundResponse(session.Code))
@@ -570,11 +571,15 @@ namespace SessionApp.Controllers
                 _ => ReportOutcomeType.DataOnly
             };
 
-            var serviceResult = _roomService.ReportOutcome(sanitizedCode, sanitizedParticipantId, outcome, sanitizedCommander, sanitizedStatistics, out var winnerId, out var removedParticipant, out var groupIndex);
+            var session = await _roomService.GetSessionAsync(sanitizedCode);
+            if (session is null)
+                return NotFound(new { message = "Room not found" });
+
+            var serviceResult = _roomService.ReportOutcome(session, sanitizedCode, sanitizedParticipantId, outcome, sanitizedCommander, sanitizedStatistics, out var winnerId, out var removedParticipant, out var groupIndex);
 
             return serviceResult switch
             {
-                ReportOutcomeResult.RoomNotFound => NotFound(new { message = "Room not found or expired" }),
+                ReportOutcomeResult.RoomNotFound => NotFound(new { message = "Room not found" }),
                 ReportOutcomeResult.NotStarted => BadRequest(new { message = "Game has not been started for this room" }),
                 ReportOutcomeResult.ParticipantNotFound => NotFound(new { message = "Participant not found in room or not in current round" }),
                 ReportOutcomeResult.AlreadyEnded => BadRequest(new { message = "This group already has a result" }),
@@ -591,7 +596,7 @@ namespace SessionApp.Controllers
         {
             var session = await _roomService.GetSessionAsync(code);
             if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
+                return NotFound(new { message = "Room not found" });
 
             if (!groupIndex.HasValue || session.Groups is null)
                 return BadRequest(new { message = "Invalid group index" });
@@ -681,10 +686,32 @@ namespace SessionApp.Controllers
             var session = await _roomService.GetSessionAsync(sanitizedCode);
 
             if (session is null)
-                return NotFound(new { message = "Room not found or expired" });
+                return NotFound(new { message = "Room not found" });
 
             var summary = session.ToSessionSummaryResponse();
             return Ok(summary);
+        }
+
+        // GET: api/Rooms/list
+        // Returns a simple list of all session codes with creation date and player count
+        [HttpGet("list")]
+        public async Task<IActionResult> GetSessionList()
+        {
+            var summaries = await _roomService.GetAllSessionSummariesAsync();
+    
+            var sessionList = summaries.Select(s => new
+            {
+                Code = s.Code,
+                EventName = s.EventName,
+                CreatedAtUtc = s.CreatedAtUtc,
+                ExpiresAtUtc = s.ExpiresAtUtc,
+                IsGameStarted = s.IsGameStarted,
+                IsGameEnded = s.IsGameEnded,
+                Archived = s.Archived,
+                ParticipantCount = s.ParticipantCount
+            }).ToList();
+
+            return Ok(sessionList);
         }
     }
 

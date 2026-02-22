@@ -12,6 +12,7 @@ namespace SessionApp.Models
     public enum GameState
     {
         Invalid,
+        Open,
         GameCreated,
         GameStarted,
         RoundStarted,
@@ -26,6 +27,7 @@ namespace SessionApp.Models
         public string HostId { get; init; } = null!;
         public DateTime CreatedAtUtc { get; init; }
         public DateTime ExpiresAtUtc { get; set; }
+        public DateTime LastModifiedAtUtc { get; set; } // Add this property
 
         // New: session-level settings that can be changed at runtime.
         // These settings are intentionally mutable and simple; validation is performed by the controller.
