@@ -326,15 +326,15 @@ namespace SessionApp.Services
                         session.CurrentRound++;
                 }
 
-                var groups = new List<Group>();
-                if (session.Settings.AllowCustomGroups && participants.Any(x => x.InCustomGroup != Guid.Empty))
-                {
-                    groups = _groupGenerationService.RandomizeRoundIncludeCustom(participants, session, Array.Empty<Group>(), task);
-                }
-                else
-                {
-                    groups = _groupGenerationService.RandomizeRound(participants, session, Array.Empty<Group>(), task);
-                }
+                //      var groups = new List<Group>();
+                //    if (session.Settings.AllowCustomGroups && participants.Any(x => x.InCustomGroup != Guid.Empty))
+                //  {
+                var groups = _groupGenerationService.RandomizeRoundIncludeCustom(participants, session, Array.Empty<Group>(), task);
+             //   }
+                //else
+                //{
+                //    groups = _groupGenerationService.RandomizeRound(participants, session, Array.Empty<Group>(), task);
+                //}
 
                 session.Groups = Array.AsReadOnly(groups.ToArray());
                 session.IsGameStarted = true;

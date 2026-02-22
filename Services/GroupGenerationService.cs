@@ -19,8 +19,20 @@ namespace SessionApp.Services
         public bool AutoFill { get; set; } = true;
     }
 
+    class GroupsToFill
+    {
+        public bool CustomGroup { get; set; } = false;
+        public bool AutoFill { get; set; }
+        public bool WinnersGroup { get; set; } = false;
+        public int GroupSize { get; set; }
+        public Group FillGroup { get; set; } = new Group();
+    }
+
     public class GroupGenerationService
     {
+        int _GroupOf4 = 4;
+        int _GroupOf3 = 3;
+
         /// <summary>
         /// Generates randomized groups for a round while minimizing repeat pairings
         /// and balancing group sizes based on session settings.
@@ -188,34 +200,40 @@ namespace SessionApp.Services
         /// </summary>
         public List<Group> RandomizeRoundIncludeCustom(List<Participant> participants, RoomSession session, IReadOnlyList<Group> snapshotGroups, RoomCodeService.HandleRoundOptions task)
         {
-            var groups = new List<Group>();
-            var customGroupList = new List<CustomGroup>();
             var completeCustomGroups = new List<Group>();
             var incompleteCustomGroups = new List<Group>();
             var participantsInCompleteCustomGroups = new HashSet<string>();
             var participantsInIncompleteCustomGroups = new HashSet<string>();
 
-            foreach (var participant in session.Participants.Values.Where(x => x.InCustomGroup != Guid.Empty))
+            // Process custom groups
+            var customGroupList = new List<CustomGroup>();
+
+            if (session.Settings.AllowCustomGroups)
             {
-                if (!customGroupList.Any(g => g.Id == participant.InCustomGroup))
+                foreach (var participant in participants.Where(x => x.InCustomGroup != Guid.Empty))
                 {
-                    var newCustomGroup = new CustomGroup
+                    if (!customGroupList.Any(g => g.Id == participant.InCustomGroup))
                     {
-                        Id = participant.InCustomGroup,
-                        AutoFill = participant.AutoFill,
-                        ParticipantList = new List<Participant> { participant }
-                    };
-                    customGroupList.Add(newCustomGroup);
-                }
-                else
-                {
-                    customGroupList.First(g => g.Id == participant.InCustomGroup).ParticipantList.Add(participant);
+                        var newCustomGroup = new CustomGroup
+                        {
+                            Id = participant.InCustomGroup,
+                            AutoFill = participant.AutoFill,
+                            ParticipantList = new List<Participant> { participant }
+                        };
+                        customGroupList.Add(newCustomGroup);
+                    }
+                    else
+                    {
+                        customGroupList.First(g => g.Id == participant.InCustomGroup).ParticipantList.Add(participant);
+                    }
                 }
             }
 
             foreach (var customGroup in customGroupList)
             {
-                if (customGroup.ParticipantList.Count >= 4 || !customGroup.AutoFill)
+                // - Has 4+ participants
+                // - Has AutoFill disabled
+                if (customGroup.ParticipantList.Count >= _GroupOf4 || !customGroup.AutoFill)
                 {
                     var completeGroup = new Group
                     {
@@ -235,7 +253,7 @@ namespace SessionApp.Services
                 }
                 else
                 {
-                    // Incomplete custom group with AutoFill enabled
+                    // Incomplete custom group with AutoFill enabled (will determine target size later)
                     var incompleteGroup = new Group
                     {
                         RoundNumber = session.CurrentRound,
@@ -254,15 +272,8 @@ namespace SessionApp.Services
                 }
             }
 
-            // Add complete custom groups (they won't be modified)
-            groups.AddRange(completeCustomGroups);
-
-            // Add empty incomplete custom groups that will be filled randomly
-            groups.AddRange(incompleteCustomGroups);
-
-            // Get available participants (excluding those in complete custom groups)
+            // Get available participants (excluding those in complete custom groups and incomplete custom groups)
             var availableParticipants = new List<Participant>();
-
             foreach (var participant in participants)
             {
                 if (!participantsInCompleteCustomGroups.Contains(participant.Id) && !participantsInIncompleteCustomGroups.Contains(participant.Id))
@@ -282,6 +293,95 @@ namespace SessionApp.Services
             {
                 groupsOf4 = totalParticipantsForGrouping / 4;
                 groupsOf3 = 0;
+            }
+
+            // Now create the groups to fill list with appropriate target sizes
+            var groupsToFillList = new List<GroupsToFill>();
+
+            // First, assign target sizes to incomplete custom groups
+            foreach (var incompleteGroup in incompleteCustomGroups)
+            {
+                int targetSize;
+
+                // Randomly choose between groups of 4 and 3 if both are available
+                if (groupsOf4 > 0 && groupsOf3 > 0 && session.Settings.AllowGroupOfThree)
+                {
+                    // Random 50/50 choice between 4 and 3
+                    targetSize = RandomNumberGenerator.GetInt32(2) == 0 ? _GroupOf4 : _GroupOf3;
+
+                    if (targetSize == _GroupOf4)
+                        groupsOf4--;
+                    else
+                        groupsOf3--;
+                }
+                else if (groupsOf4 > 0)
+                {
+                    targetSize = _GroupOf4;
+                    groupsOf4--;
+                }
+                else if (groupsOf3 > 0 && session.Settings.AllowGroupOfThree)
+                {
+                    targetSize = _GroupOf3;
+                    groupsOf3--;
+                }
+                else
+                {
+                    targetSize = _GroupOf4; // Fallback
+                }
+
+                groupsToFillList.Add(new GroupsToFill
+                {
+                    CustomGroup = true,
+                    AutoFill = true,
+                    WinnersGroup = false,
+                    GroupSize = targetSize,
+                    FillGroup = incompleteGroup
+                });
+            }
+
+            // Create additional groups of 4
+            for (int i = 0; i < groupsOf4; i++)
+            {
+                var grp = new Group
+                {
+                    RoundNumber = session.CurrentRound,
+                    StartedAtUtc = DateTime.UtcNow,
+                    IsCustom = false,
+                    AutoFill = true
+                };
+
+                groupsToFillList.Add(new GroupsToFill
+                {
+                    CustomGroup = false,
+                    AutoFill = true,
+                    WinnersGroup = false,
+                    GroupSize = _GroupOf4,
+                    FillGroup = grp
+                });
+            }
+
+            // Create groups of 3 if allowed
+            if (session.Settings.AllowGroupOfThree)
+            {
+                for (int i = 0; i < groupsOf3; i++)
+                {
+                    var grp = new Group
+                    {
+                        RoundNumber = session.CurrentRound,
+                        StartedAtUtc = DateTime.UtcNow,
+                        IsCustom = false,
+                        AutoFill = true
+                    };
+
+                    groupsToFillList.Add(new GroupsToFill
+                    {
+                        CustomGroup = false,
+                        AutoFill = true,
+                        WinnersGroup = false,
+                        GroupSize = _GroupOf3,
+                        FillGroup = grp
+                    });
+                }
             }
 
             // Get the last round's groups to determine winners
@@ -315,7 +415,6 @@ namespace SessionApp.Services
 
             // Separate regular participants
             var regularParticipants = new List<Participant>();
-
             foreach (var participant in availableParticipants)
             {
                 if (!allWinners.Any(w => w.Id == participant.Id))
@@ -324,29 +423,11 @@ namespace SessionApp.Services
                 }
             }
 
-            //// Get all groups that need filling (incomplete custom + new regular groups)
-            var groupsToFill = groups.Where(g => g.Participants.Values.Count < 4 && !completeCustomGroups.Contains(g)).ToList();
+            // Shuffle the groups to fill so custom groups don't get priority
+            ShuffleList(groupsToFillList);
 
-            // Calculate additional groups needed AFTER winner groups are created
-            var additionalGroupsOf4Needed = Math.Max(0, groupsOf4 - incompleteCustomGroups.Count);
-
-            // Create additional groups of 4 if needed
-            for (int i = 0; i < additionalGroupsOf4Needed; i++)
-            {
-                var grp = new Group
-                {
-                    RoundNumber = session.CurrentRound,
-                    StartedAtUtc = DateTime.UtcNow,
-                    IsCustom = false,
-                    AutoFill = true
-                };
-
-                groups.Add(grp);
-                groupsToFill.Add(grp);
-            }
-
-            // Create winner groups
-            var remainingWinners = CreateWinnersV2Groups(allWinners, groupsToFill, session, regularParticipants, pairingHistory, groupOf3History);
+            // Fill winner groups first
+            var remainingWinners = FillWinnerGroups(allWinners, groupsToFillList, regularParticipants, pairingHistory, groupOf3History);
 
             // Combine all remaining participants and shuffle
             var allRemaining = new List<Participant>();
@@ -354,22 +435,18 @@ namespace SessionApp.Services
             allRemaining.AddRange(regularParticipants);
             ShuffleList(allRemaining);
 
-
-            // Shuffle the groups to fill so custom groups don't get priority
-            ShuffleList(groupsToFill);
-
-            // Fill all groups randomly to 4 participants
-            foreach (var group in groupsToFill)
+            // Fill all groups to their target size
+            foreach (var groupToFill in groupsToFillList)
             {
-                while (group.Participants.Values.Count < 4 && allRemaining.Count > 0)
+                while (groupToFill.FillGroup.Participants.Values.Count < groupToFill.GroupSize && allRemaining.Count > 0)
                 {
-                    var existingMembers = group.Participants.Values.ToList();
+                    var existingMembers = groupToFill.FillGroup.Participants.Values.ToList();
                     var selected = SelectParticipantsMinimizingPairings(allRemaining, existingMembers, 1, pairingHistory, groupOf3History);
 
                     if (selected.Count > 0)
                     {
                         var participant = selected[0];
-                        group.AddParticipant(participant);
+                        groupToFill.FillGroup.AddParticipant(participant);
                         allRemaining.Remove(participant);
                     }
                     else
@@ -379,37 +456,18 @@ namespace SessionApp.Services
                 }
             }
 
-            // Create groups of 3 if allowed and we have remaining participants
-            if (session.Settings.AllowGroupOfThree)
+            // Validate all groups have correct size
+            foreach (var groupToFill in groupsToFillList)
             {
-                for (int i = 0; i < groupsOf3 && allRemaining.Count >= 3; i++)
+                if (groupToFill.FillGroup.Participants.Values.Count != groupToFill.GroupSize)
                 {
-                    var groupMembers = new List<Participant>();
-
-                    var selected = SelectParticipantsMinimizingPairings(allRemaining, new List<Participant>(), 3, pairingHistory, groupOf3History);
-
-                    foreach (var p in selected)
-                    {
-                        groupMembers.Add(p);
-                        allRemaining.Remove(p);
-                    }
-
-                    var grp = new Group
-                    {
-                        RoundNumber = session.CurrentRound,
-                        StartedAtUtc = DateTime.UtcNow,
-                        IsCustom = false,
-                        AutoFill = true
-                    };
-
-                    foreach (var p in groupMembers)
-                        grp.AddParticipant(p);
-
-                    groups.Add(grp);
+                    throw new InvalidOperationException(
+                        $"Group {groupToFill.FillGroup.GroupNumber} has {groupToFill.FillGroup.Participants.Values.Count} participants but expected {groupToFill.GroupSize}. " +
+                        $"Total participants for grouping: {totalParticipantsForGrouping}, Remaining: {allRemaining.Count}");
                 }
             }
 
-            //Puts the remaining players into a bye group
+            // Handle remaining participants - put in bye group
             if (allRemaining.Count > 0)
             {
                 var byeGroup = new Group
@@ -424,10 +482,96 @@ namespace SessionApp.Services
                 foreach (var p in allRemaining)
                     byeGroup.AddParticipant(p);
 
-                groups.Add(byeGroup);
+                completeCustomGroups.Add(byeGroup);
             }
 
-            return HandleGroupNumber(groups, session, lastRound);
+            // Combine all groups
+            var allGroups = new List<Group>();
+            allGroups.AddRange(completeCustomGroups);
+            allGroups.AddRange(groupsToFillList.Select(g => g.FillGroup));
+
+            return HandleGroupNumber(allGroups, session, lastRound);
+        }
+
+        /// <summary>
+        /// Fills groups with winners, prioritizing complete winner groups of 4.
+        /// Returns any remaining winners that couldn't form complete groups.
+        /// </summary>
+        private List<Participant> FillWinnerGroups(List<Participant> allWinners, List<GroupsToFill> groupsToFillList, List<Participant> regularParticipants, Dictionary<string, int> pairingHistory, Dictionary<string, int> groupOf3History)
+        {
+            var remainingWinners = new List<Participant>();
+
+            // Calculate how many winner groups we can create (one group per 4 winners)
+            var winnerGroupCount = allWinners.Count / 4;
+
+            // Shuffle winners once before distributing
+            ShuffleList(allWinners);
+
+            // Create winner groups (full groups of 4)
+            for (var i = 0; i < winnerGroupCount; i++)
+            {
+                var winningGroupToFill = groupsToFillList.FirstOrDefault(x => x.FillGroup.Participants.Count == 0 && x.GroupSize == 4);
+
+                if (winningGroupToFill != null)
+                {
+                    var winnersForGroup = allWinners.Skip(i * 4).Take(4).ToList();
+
+                    if (winnersForGroup.Count == 4)
+                    {
+                        ShuffleList(winnersForGroup);
+                        winningGroupToFill.WinnersGroup = true;
+
+                        foreach (var p in winnersForGroup)
+                            winningGroupToFill.FillGroup.AddParticipant(p);
+                    }
+                    else
+                    {
+                        remainingWinners.AddRange(winnersForGroup);
+                    }
+                }
+            }
+
+            // Handle remaining winners (fewer than 4)
+            if (allWinners.Count % 4 != 0)
+            {
+                remainingWinners.AddRange(allWinners.Skip(winnerGroupCount * 4));
+            }
+
+            var groupToFill = groupsToFillList
+                .Where(g => g.GroupSize == 4)
+                .OrderBy(x => x.FillGroup.Participants.Count)
+                .FirstOrDefault();
+
+            if (groupToFill == null)
+                return remainingWinners;
+
+            // If we have remaining winners (1-3), try to fill them up to 4
+            if (remainingWinners.Count > 0 && remainingWinners.Count < 4)
+            {
+                var needed = Math.Min(4 - remainingWinners.Count, regularParticipants.Count);
+                if (needed > 0)
+                {
+                    var selected = SelectParticipantsMinimizingPairings(regularParticipants, remainingWinners, needed, pairingHistory, groupOf3History);
+
+                    remainingWinners.AddRange(selected);
+                    foreach (var p in selected)
+                        regularParticipants.Remove(p);
+                }
+
+                // Create the partial winners group if we have 4 participants
+                if (remainingWinners.Count == 4)
+                {
+                    ShuffleList(remainingWinners);
+                    groupToFill.WinnersGroup = true;
+
+                    foreach (var p in remainingWinners)
+                        groupToFill.FillGroup.AddParticipant(p);
+
+                    remainingWinners.Clear();
+                }
+            }
+
+            return remainingWinners;
         }
 
         // look to remove this
@@ -554,7 +698,7 @@ namespace SessionApp.Services
             }
 
             var groupToFill = groupsToFill.OrderBy(x => x.Participants.Count).FirstOrDefault();
-            if(groupToFill == null)
+            if (groupToFill == null)
                 return remainingWinners;
 
             // If we have remaining winners (1-3), try to fill them up to 4
@@ -574,7 +718,7 @@ namespace SessionApp.Services
                             regularParticipants.Remove(p);
                     }
                 }
-                
+
                 // Create the partial winners group if we have 4 participants
                 if (remainingWinners.Count == 4)
                 {
@@ -845,7 +989,7 @@ namespace SessionApp.Services
                     continue;
 
                 var hasWinner = lastRound?.Any(lr => !string.IsNullOrEmpty(lr.WinnerParticipantId) && group.Participants.Values.Any(p => p.Id == lr.WinnerParticipantId)) ?? false;
-                
+
                 if (hasWinner)
                 {
                     winnersGroups.Add(group);

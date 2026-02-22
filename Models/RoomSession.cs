@@ -9,6 +9,17 @@ using System.Text.Json.Serialization;
 
 namespace SessionApp.Models
 {
+    public enum GameState
+    {
+        Invalid,
+        GameCreated,
+        GameStarted,
+        RoundStarted,
+        RoundEnded,
+        GameEnded,
+        Archived,
+    }
+
     public class RoomSession
     {
         public string Code { get; init; } = null!;
@@ -23,6 +34,7 @@ namespace SessionApp.Models
         // Participants keyed by participant id
         public ConcurrentDictionary<string, Participant> Participants { get; } = new();
 
+        public GameState 
         // Tournament/game state
         // Once a game is started these will be populated and IsGameStarted will be true.
         public bool IsGameStarted { get; set; }

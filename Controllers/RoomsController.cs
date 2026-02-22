@@ -216,12 +216,12 @@ namespace SessionApp.Controllers
             }
 
             // Save settings to database
-            var saved = await _roomService.SaveSessionToDatabaseAsync(session);
-            if (!saved)
-            {
-                return StatusCode(StatusCodes.Status500InternalServerError,
-                    new { message = "Failed to save settings to database" });
-            }
+            await _roomService.SaveSessionToDatabaseAsync(session);
+            //if (!saved)
+            //{
+            //    return StatusCode(StatusCodes.Status500InternalServerError,
+            //        new { message = "Failed to save settings to database" });
+            //}
 
             var payload = new
             {
