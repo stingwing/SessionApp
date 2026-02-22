@@ -34,7 +34,7 @@ namespace SessionApp.Models
         // Participants keyed by participant id
         public ConcurrentDictionary<string, Participant> Participants { get; } = new();
 
-        public GameState 
+        public GameState GameState { get; set; } = GameState.Invalid;
         // Tournament/game state
         // Once a game is started these will be populated and IsGameStarted will be true.
         public bool IsGameStarted { get; set; }
