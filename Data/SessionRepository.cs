@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using WebPush;
 
 namespace SessionApp.Data
 {
@@ -449,6 +450,67 @@ namespace SessionApp.Data
                 .ToListAsync();
 
             return entities;
+        }
+
+        public async Task SaveSubscriptionAsync(string roomCode, string participantId, PushSubscription subscription)
+        {
+            // Remove existing subscription for this participant in this room
+            var existing = await _context.PushSubscriptions
+                .FirstOrDefaultAsync(s => s.RoomCode == roomCode && s.ParticipantId == participantId);
+            
+            if (existing != null)
+            {
+                _context.PushSubscriptions.Remove(existing);
+            }
+
+            var entity = new PushSubscriptionEntity
+            {
+                RoomCode = roomCode,
+                ParticipantId = participantId,
+                Endpoint = subscription.Endpoint,
+                P256dh = subscription.P256DH,
+                Auth = subscription.Auth,
+                SubscribedAtUtc = DateTime.UtcNow
+            };
+
+            _context.PushSubscriptions.Add(entity);
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task<List<(PushSubscription Subscription, string ParticipantId)>> GetSubscriptionsByRoomCodeAsync(string roomCode)
+        {
+            var entities = await _context.PushSubscriptions
+                .Where(s => s.RoomCode == roomCode)
+                .ToListAsync();
+
+            return entities.Select(e => (
+                Subscription: new PushSubscription(e.Endpoint, e.P256dh, e.Auth),
+                ParticipantId: e.ParticipantId
+            )).ToList();
+        }
+
+        public async Task<PushSubscription?> GetSubscriptionAsync(string roomCode, string participantId)
+        {
+            var entity = await _context.PushSubscriptions
+                .FirstOrDefaultAsync(s => s.RoomCode == roomCode && s.ParticipantId == participantId);
+            if (entity == null)
+            {
+                return null;
+            }
+
+            return new PushSubscription(entity.Endpoint, entity.P256dh, entity.Auth);
+        }
+
+        public async Task RemoveSubscriptionAsync(PushSubscription subscription)
+        {
+            var entity = await _context.PushSubscriptions
+                .FirstOrDefaultAsync(s => s.Endpoint == subscription.Endpoint);
+            
+            if (entity != null)
+            {
+                _context.PushSubscriptions.Remove(entity);
+                await _context.SaveChangesAsync();
+            }
         }
     }
 }
