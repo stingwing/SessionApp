@@ -12,6 +12,7 @@ namespace SessionApp.Data
         public DbSet<GroupParticipantEntity> GroupParticipants { get; set; }
         public DbSet<ArchivedRoundEntity> ArchivedRounds { get; set; }
         public DbSet<CommanderEntity> Commanders { get; set; }
+        public DbSet<PushSubscriptionEntity> PushSubscriptions => Set<PushSubscriptionEntity>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -95,6 +96,18 @@ namespace SessionApp.Data
                 entity.Property(e => e.LegalitiesJson).HasDefaultValue("{}").HasColumnType("jsonb");
                 entity.HasIndex(e => e.Name);
                 entity.HasIndex(e => e.LastUpdatedUtc);
+            });
+
+            modelBuilder.Entity<PushSubscriptionEntity>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.RoomCode).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.ParticipantId).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Endpoint).IsRequired().HasMaxLength(500);
+                entity.Property(e => e.P256dh).IsRequired();
+                entity.Property(e => e.Auth).IsRequired();
+                entity.HasIndex(e => new { e.RoomCode, e.ParticipantId });
+                entity.HasIndex(e => e.Endpoint);
             });
         }
     }

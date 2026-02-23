@@ -50,11 +50,71 @@ namespace SessionApp.Services
             _groupGenerationService = new GroupGenerationService();
             _cleanupTimer = new Timer(_ => CleanupExpiredSessions(), null, _cleanupInterval, _cleanupInterval);
 
-            // Load existing sessions from database on startup
-            if (_serviceProvider != null)
-            {
-            //    _ = LoadSessionsFromDatabaseAsync();
-            }
+            // Wire up push notifications
+            ParticipantJoined += OnParticipantJoined;
+            NewRoundStarted += OnNewRoundStarted;
+            GameEnded += OnGameEnded;
+            ParticipantDropped += OnParticipantDropped;
+        }
+
+        private async void OnParticipantJoined(RoomSession session, Participant participant)
+        {
+            if (_serviceProvider == null) return;
+            
+            using var scope = _serviceProvider.CreateScope();
+            var pushService = scope.ServiceProvider.GetRequiredService<PushNotificationService>();
+            
+            await pushService.NotifyRoomAsync(
+                session.Code,
+                "Player Joined",
+                $"{participant.Name} has joined the room",
+                new Dictionary<string, string> { ["type"] = "participant_joined" }
+            );
+        }
+
+        private async void OnNewRoundStarted(RoomSession session, IReadOnlyList<Group> groups)
+        {
+            if (_serviceProvider == null) return;
+            
+            using var scope = _serviceProvider.CreateScope();
+            var pushService = scope.ServiceProvider.GetRequiredService<PushNotificationService>();
+            
+            await pushService.NotifyRoomAsync(
+                session.Code,
+                "New Round Started",
+                $"Round {session.CurrentRound} has begun!",
+                new Dictionary<string, string> { ["type"] = "round_started", ["round"] = session.CurrentRound.ToString() }
+            );
+        }
+
+        private async void OnGameEnded(RoomSession session, ReportOutcomeType outcome, string? winnerId)
+        {
+            if (_serviceProvider == null) return;
+            
+            using var scope = _serviceProvider.CreateScope();
+            var pushService = scope.ServiceProvider.GetRequiredService<PushNotificationService>();
+            
+            await pushService.NotifyRoomAsync(
+                session.Code,
+                "Game Ended",
+                $"The game has concluded!",
+                new Dictionary<string, string> { ["type"] = "game_ended" }
+            );
+        }
+
+        private async void OnParticipantDropped(RoomSession session, Participant participant)
+        {
+            if (_serviceProvider == null) return;
+            
+            using var scope = _serviceProvider.CreateScope();
+            var pushService = scope.ServiceProvider.GetRequiredService<PushNotificationService>();
+            
+            await pushService.NotifyRoomAsync(
+                session.Code,
+                "Player Dropped",
+                $"{participant.Name} has left the room",
+                new Dictionary<string, string> { ["type"] = "participant_dropped" }
+            );
         }
 
         private async Task LoadSessionsFromDatabaseAsync()

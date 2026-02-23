@@ -9,6 +9,7 @@ using SessionApp.Hubs;
 using SessionApp.Services;
 using System.IO.Compression;
 using System.Threading.RateLimiting;
+using WebPush;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -238,6 +239,8 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+builder.Services.AddSingleton<PushNotificationService>();
+
 var app = builder.Build();
 
 // Log the masked connection string after the app is built
@@ -325,3 +328,9 @@ static string MaskPassword(string connectionString)
         "$1=***REDACTED***",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 }
+
+// VAPID keys generation for Web Push Notifications (to be run once)
+// Remove or comment out after the keys are generated
+var vapidKeys = VapidHelper.GenerateVapidKeys();
+Console.WriteLine($"Public Key: {vapidKeys.PublicKey}");
+Console.WriteLine($"Private Key: {vapidKeys.PrivateKey}");

@@ -13,6 +13,8 @@ using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Threading.Tasks;
 using static SessionApp.Services.RoomCodeService;
+using WebPush;
+using SessionApp.Data;
 
 namespace SessionApp.Controllers
 {
@@ -24,12 +26,14 @@ namespace SessionApp.Controllers
         private readonly RoomCodeService _roomService;
         private readonly IHubContext<RoomsHub> _hubContext;
         private readonly GameActionService _gameActionService;
+        private readonly IServiceProvider _serviceProvider;
 
-        public RoomsController(RoomCodeService roomService, IHubContext<RoomsHub> hubContext, GameActionService gameActionService)
+        public RoomsController(RoomCodeService roomService, IHubContext<RoomsHub> hubContext, GameActionService gameActionService, IServiceProvider serviceProvider)
         {
             _roomService = roomService;
             _hubContext = hubContext;
             _gameActionService = gameActionService;
+            _serviceProvider = serviceProvider;
         }
 
         // Simple test endpoint to verify the service is running
@@ -712,6 +716,52 @@ namespace SessionApp.Controllers
             }).ToList();
 
             return Ok(sessionList);
+        }
+
+        [HttpPost("{code}/subscribe")]
+        public async Task<IActionResult> Subscribe(
+            [FromRoute][Required][RoomCode] string code,
+            [FromBody] PushSubscribeRequest request)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
+            var session = await _roomService.GetSessionAsync(sanitizedCode);
+            
+            if (session == null)
+                return NotFound(new { message = "Room not found" });
+
+            var subscription = new PushSubscription(
+                request.Endpoint,
+                request.Keys.P256dh,
+                request.Keys.Auth
+            );
+
+            using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+            await repository.SaveSubscriptionAsync(sanitizedCode, request.ParticipantId, subscription);
+
+            return Ok(new { message = "Subscription saved" });
+        }
+
+        [HttpDelete("{code}/unsubscribe")]
+        public async Task<IActionResult> Unsubscribe(
+            [FromRoute][Required][RoomCode] string code,
+            [FromQuery][Required] string participantId)
+        {
+            var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
+            
+            using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+            var subscription = await repository.GetSubscriptionAsync(sanitizedCode, participantId);
+            
+            if (subscription != null)
+            {
+                await repository.RemoveSubscriptionAsync(subscription);
+            }
+
+            return Ok(new { message = "Unsubscribed" });
         }
     }
 
