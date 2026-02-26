@@ -131,7 +131,7 @@ namespace SessionApp.Services
             });
         }
 
-        public RoomSession CreateSession(string hostId, int codeLength = 6, TimeSpan? ttl = null)
+        public RoomSession CreateSession(string hostId, int codeLength = 6, TimeSpan? ttl = null, string? eventName = null)
         {
             if (string.IsNullOrWhiteSpace(hostId))
                 throw new ArgumentException("hostId is required", nameof(hostId));
@@ -152,7 +152,8 @@ namespace SessionApp.Services
                     HostId = hostId,
                     CreatedAtUtc = now,
                     ExpiresAtUtc = now.Add(ttl.Value),
-                    LastModifiedAtUtc = now // Add this
+                    LastModifiedAtUtc = now,
+                    EventName = eventName ?? string.Empty
                 };
 
                 if (_sessions.TryAdd(key, session))
@@ -426,7 +427,9 @@ namespace SessionApp.Services
             Win,
             Draw,
             DropOut,
-            DataOnly // Add this new type for statistics-only updates
+            DataOnly, // Add this new type for statistics-only updates
+            Commander,
+            PlayerOrder,
         }
 
         public enum HandleRoundOptions
@@ -499,6 +502,7 @@ namespace SessionApp.Services
                                                  
                     participant.Dropped = !participant.Dropped;
                     SaveSessionToDatabaseFireAndForget(session);
+                    removedParticipant = participant;
                     return ReportOutcomeResult.Success;
                 }
 
@@ -553,20 +557,21 @@ namespace SessionApp.Services
                             }
                         }
 
-
-
                         currentGroup.Statistics[stat.Key] = stat.Value;
                     }
                 }
 
-                //Update Commander for this round.
-                currentGroup.Participants[participantId].Commander = commander;
-                
-                // Check for missing commander keys in statistics for all participants in the group
-                EnsureCommanderStatistics(currentGroup);
+                if (commander != string.Empty) // this is wrong but there is a logic error where if the player order is updated but commander is not included in the request, the commander gets wiped out. need to find a better way to handle commander updates that doesn't rely on the client including it in every request
+                {
+                    //Update Commander for this round.
+                    currentGroup.Participants[participantId].Commander = commander;
+
+                    // Check for missing commander keys in statistics for all participants in the group
+                    EnsureCommanderStatistics(currentGroup);
+                }
 
                 // Handle DataOnly - just update statistics without changing result
-                if (outcome == ReportOutcomeType.DataOnly)
+                if (outcome == ReportOutcomeType.DataOnly || outcome == ReportOutcomeType.Commander || outcome == ReportOutcomeType.PlayerOrder)
                 {
                     // Save to database (fire and forget)
                     SaveSessionToDatabaseFireAndForget(session);
@@ -749,6 +754,29 @@ namespace SessionApp.Services
             finally
             {
                 _summariesCacheLock.Release();
+            }
+        }
+
+        public async Task<bool> DeleteSessionAsync(string code)
+        {
+            if (_serviceProvider == null)
+                return false;
+
+            var sanitizedCode = code.ToUpperInvariant();
+
+            try
+            {
+                // Remove from in-memory cache
+                _sessions.TryRemove(sanitizedCode, out _);
+
+                // Delete from database
+                using var scope = _serviceProvider.CreateScope();
+                var repository = scope.ServiceProvider.GetRequiredService<SessionRepository>();
+                return await repository.DeleteSessionAsync(sanitizedCode);
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 

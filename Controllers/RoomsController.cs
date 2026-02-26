@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Configuration;
 using SessionApp.Helpers;
 using SessionApp.Hubs;
 using SessionApp.Models;
@@ -24,12 +25,14 @@ namespace SessionApp.Controllers
         private readonly RoomCodeService _roomService;
         private readonly IHubContext<RoomsHub> _hubContext;
         private readonly GameActionService _gameActionService;
+        private readonly IConfiguration _configuration;
 
-        public RoomsController(RoomCodeService roomService, IHubContext<RoomsHub> hubContext, GameActionService gameActionService)
+        public RoomsController(RoomCodeService roomService, IHubContext<RoomsHub> hubContext, GameActionService gameActionService, IConfiguration configuration)
         {
             _roomService = roomService;
             _hubContext = hubContext;
             _gameActionService = gameActionService;
+            _configuration = configuration;
         }
 
         // Simple test endpoint to verify the service is running
@@ -57,6 +60,9 @@ namespace SessionApp.Controllers
 
             // Sanitize input
             var sanitizedHostId = InputSanitizer.SanitizeString(request.HostId);
+            var sanitizedEventName = !string.IsNullOrWhiteSpace(request.EventName) 
+                ? InputSanitizer.SanitizeString(request.EventName) 
+                : string.Empty;
 
             if (string.IsNullOrWhiteSpace(sanitizedHostId))
             {
@@ -66,7 +72,8 @@ namespace SessionApp.Controllers
             var session = _roomService.CreateSession(
                 sanitizedHostId,
                 request.CodeLength,
-                request.Ttl ?? TimeSpan.FromDays(7));
+                request.Ttl ?? TimeSpan.FromDays(7),
+                sanitizedEventName);
 
             // Notify connected clients (optional: clients may join groups by room code)
             await _hubContext.Clients.Group(session.Code).SendAsync("RoomCreated",
@@ -485,7 +492,7 @@ namespace SessionApp.Controllers
                 {
                     var response = new ParticipantGroupResponse(
                         session.Code,
-                        sanitizedParticipantId,
+                        sanitizedParticipantId,                   
                         group.GroupNumber,
                         group.Participants.Values.Select(p => p.ToMemberResponse()).ToArray(),
                         group.RoundNumber,
@@ -568,6 +575,8 @@ namespace SessionApp.Controllers
                 "draw" => ReportOutcomeType.Draw,
                 "drop" => ReportOutcomeType.DropOut,
                 "data" => ReportOutcomeType.DataOnly,
+                "commander" => ReportOutcomeType.Commander,
+                "order" => ReportOutcomeType.PlayerOrder,
                 _ => ReportOutcomeType.DataOnly
             };
 
@@ -584,15 +593,15 @@ namespace SessionApp.Controllers
                 ReportOutcomeResult.ParticipantNotFound => NotFound(new { message = "Participant not found in room or not in current round" }),
                 ReportOutcomeResult.AlreadyEnded => BadRequest(new { message = "This group already has a result" }),
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.DropOut => await HandleDropoutBroadcast(sanitizedCode, removedParticipant),
-                ReportOutcomeResult.Success when outcome == ReportOutcomeType.Win => await HandleGroupEndedBroadcast(sanitizedCode, "win", winnerId, groupIndex, sanitizedParticipantId),
-                ReportOutcomeResult.Success when outcome == ReportOutcomeType.Draw => await HandleGroupEndedBroadcast(sanitizedCode, "draw", null, groupIndex, sanitizedParticipantId),
-                ReportOutcomeResult.Success when outcome == ReportOutcomeType.DataOnly => await HandleGroupEndedBroadcast(sanitizedCode, "data", null, groupIndex, sanitizedParticipantId),
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.Win => await HandleReportBroadcast(sanitizedCode, groupIndex, sanitizedParticipantId),
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.Draw => await HandleReportBroadcast(sanitizedCode, groupIndex, sanitizedParticipantId),
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.DataOnly => await HandleReportBroadcast(sanitizedCode, groupIndex, sanitizedParticipantId),
                 ReportOutcomeResult.RoundStarted => Ok(new { message = "The Round has already Started" }),
                 _ => StatusCode(500, new { message = "Unknown error reporting outcome" })
             };
         }
 
-        private async Task<IActionResult> HandleGroupEndedBroadcast(string code, string result, string? winnerId, int? groupIndex, string participantId)
+        private async Task<IActionResult> HandleReportBroadcast(string code, int? groupIndex, string participantId)
         {
             var session = await _roomService.GetSessionAsync(code);
             if (session is null)
@@ -713,6 +722,90 @@ namespace SessionApp.Controllers
 
             return Ok(sessionList);
         }
+
+        // POST api/rooms/{code}/validate-host
+        // Validates that the provided hostId matches the room's host
+        [HttpPost("{code}/validate-host")]
+        // Uses default "api" rate limiting
+        public async Task<IActionResult> ValidateHost(
+            [FromRoute][Required][RoomCode] string code,
+            [FromBody] ValidateHostRequest request)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(new
+                {
+                    message = "Validation failed",
+                    errors = ModelState.Values.SelectMany(v => v.Errors).Select(e => e.ErrorMessage)
+                });
+            }
+
+            var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
+            var sanitizedHostId = InputSanitizer.SanitizeString(request.HostId);
+
+            var session = await _roomService.GetSessionAsync(sanitizedCode);
+            if (session is null)
+                return NotFound(new { message = "Room not found" });
+
+            var isValid = string.Equals(session.HostId, sanitizedHostId, StringComparison.Ordinal);
+
+            return Ok(new ValidateHostResponse(isValid));
+        }
+
+        // DELETE api/rooms/{code}
+// Deletes a session and all its related data from the database
+[HttpDelete("{code}")]
+[EnableRateLimiting("strict")] // Strict rate limiting for deletion
+public async Task<IActionResult> DeleteSession(
+    [FromRoute][Required][RoomCode] string code,
+    [FromBody] DeleteSessionRequest request)
+{
+    if (!ModelState.IsValid)
+    {
+        return BadRequest(new
+        {
+            message = "Validation failed",
+            errors = ModelState.Values.SelectMany(v => v.Errors).Select(e => e.ErrorMessage)
+        });
+    }
+
+    // Read admin password from environment variable (or appsettings.json as fallback)
+    var adminPassword = _configuration["AdminPassword"] 
+                        ?? Environment.GetEnvironmentVariable("ADMIN_PASSWORD");
+    
+    if (string.IsNullOrWhiteSpace(adminPassword))
+    {
+        return StatusCode(StatusCodes.Status500InternalServerError,
+            new { message = "Admin password not configured" });
+    }
+
+    var sanitizedPassword = InputSanitizer.SanitizeString(request.Password);
+    if (!string.Equals(adminPassword, sanitizedPassword, StringComparison.Ordinal))
+    {
+        return Unauthorized(new { message = "Invalid password" });
+    }
+
+    var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
+    
+    // Verify session exists before attempting deletion
+    var session = await _roomService.GetSessionAsync(sanitizedCode);
+    if (session is null)
+        return NotFound(new { message = "Room not found" });
+
+    // Delete the session
+    var deleted = await _roomService.DeleteSessionAsync(sanitizedCode);
+    
+    if (!deleted)
+    {
+        return StatusCode(StatusCodes.Status500InternalServerError,
+            new { message = "Failed to delete session" });
+    }
+
+    // Notify connected clients that the room was deleted
+    await _hubContext.Clients.Group(sanitizedCode).SendAsync("RoomDeleted", new { RoomCode = sanitizedCode });
+
+    return Ok(new { message = "Session deleted successfully", code = sanitizedCode });
+}
     }
 
     // ===== DTOs with Validation =====
@@ -726,7 +819,10 @@ namespace SessionApp.Controllers
         int CodeLength = 6,
 
         [TimeSpanRange(MinHours = 1, MaxHours = 720)] // 1 hour to 30 days
-        TimeSpan? Ttl = null
+        TimeSpan? Ttl = null,
+
+        [SafeString(MinLength = 0, MaxLength = 200)]
+        string? EventName = null
     );
 
     public record CreateRoomResponse(
@@ -919,5 +1015,21 @@ namespace SessionApp.Controllers
         GroupResponse[]? CurrentGroups,
         int ArchivedRoundsCount,
         RoundResponse[] ArchivedRounds
+    );
+
+    public record ValidateHostRequest(
+        [Required(ErrorMessage = "HostId is required")]
+        [SafeString(MinLength = 3, MaxLength = 100)]
+        string HostId
+    );
+
+    public record ValidateHostResponse(
+        bool IsValid
+    );
+
+    public record DeleteSessionRequest(
+        [Required(ErrorMessage = "Password is required")]
+        [SafeString(MinLength = 1, MaxLength = 200)]
+        string Password
     );
 }
