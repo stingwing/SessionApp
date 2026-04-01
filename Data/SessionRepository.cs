@@ -30,6 +30,7 @@ namespace SessionApp.Data
                     Code = session.Code,
                     EventName = session.EventName,
                     HostId = session.HostId,
+                    HostUserId = session.HostUserId,  // Save the optional host UserId
                     CreatedAtUtc = session.CreatedAtUtc,
                     ExpiresAtUtc = session.ExpiresAtUtc,
                     IsGameStarted = session.IsGameStarted,
@@ -44,6 +45,7 @@ namespace SessionApp.Data
             else
             {
                 entity.EventName = session.EventName;
+                entity.HostUserId = session.HostUserId;  // Update the optional host UserId
                 entity.ExpiresAtUtc = session.ExpiresAtUtc;
                 entity.IsGameStarted = session.IsGameStarted;
                 entity.IsGameEnded = session.IsGameEnded;
@@ -79,7 +81,8 @@ namespace SessionApp.Data
                         Points = participant.Points,
                         JoinedAtUtc = participant.JoinedAtUtc,
                         Dropped = participant.Dropped,
-                        InCustomGroup = participant.InCustomGroup
+                        InCustomGroup = participant.InCustomGroup,
+                        UserId = participant.UserId  // Save the optional participant UserId
                     });
                 }
                 else
@@ -90,6 +93,7 @@ namespace SessionApp.Data
                     existing.Points = participant.Points;
                     existing.Dropped = participant.Dropped;
                     existing.InCustomGroup = participant.InCustomGroup;
+                    existing.UserId = participant.UserId;  // Update the optional participant UserId
                 }
             }
 
@@ -311,6 +315,7 @@ namespace SessionApp.Data
                 Code = entity.Code,
                 EventName = entity.EventName,
                 HostId = entity.HostId,
+                HostUserId = entity.HostUserId,  // Load the optional host UserId
                 CreatedAtUtc = entity.CreatedAtUtc,
                 ExpiresAtUtc = entity.ExpiresAtUtc,
                 IsGameStarted = entity.IsGameStarted,
@@ -333,6 +338,7 @@ namespace SessionApp.Data
                     JoinedAtUtc = p.JoinedAtUtc,
                     Dropped = p.Dropped,
                     InCustomGroup = p.InCustomGroup,
+                    UserId = p.UserId  // Load the optional participant UserId
                 };
             }
 
@@ -446,6 +452,91 @@ namespace SessionApp.Data
                     Archived = s.Archived,
                     ParticipantCount = s.Participants.Count
                 })
+                .ToListAsync();
+
+            return entities;
+        }
+
+        /// <summary>
+        /// Links a session to a user account (when creating a session with a logged-in user)
+        /// </summary>
+        public async Task<bool> LinkSessionToUserAsync(string sessionCode, Guid userId)
+        {
+            var entity = await _context.Sessions.FindAsync(sessionCode.ToUpperInvariant());
+            if (entity == null)
+                return false;
+
+            entity.LinkHostUser(userId);
+            await _context.SaveChangesAsync();
+            return true;
+        }
+
+        /// <summary>
+        /// Links a participant to a user account (when joining with a logged-in user)
+        /// </summary>
+        public async Task<bool> LinkParticipantToUserAsync(string sessionCode, string participantId, Guid userId)
+        {
+            var entity = await _context.Participants
+                .FirstOrDefaultAsync(p => p.SessionCode == sessionCode.ToUpperInvariant() 
+                    && p.ParticipantId == participantId);
+
+            if (entity == null)
+                return false;
+
+            entity.LinkParticipantUser(userId);
+            await _context.SaveChangesAsync();
+            return true;
+        }
+
+        /// <summary>
+        /// Gets all sessions created by a specific user
+        /// </summary>
+        public async Task<List<SessionSummary>> GetSessionsByUserAsync(Guid userId)
+        {
+            var entities = await _context.Sessions
+                .Where(s => s.HostUserId == userId)
+                .Select(s => new SessionSummary
+                {
+                    Code = s.Code,
+                    EventName = s.EventName,
+                    CreatedAtUtc = s.CreatedAtUtc,
+                    ExpiresAtUtc = s.ExpiresAtUtc,
+                    IsGameStarted = s.IsGameStarted,
+                    IsGameEnded = s.IsGameEnded,
+                    Archived = s.Archived,
+                    ParticipantCount = s.Participants.Count
+                })
+                .OrderByDescending(s => s.CreatedAtUtc)
+                .ToListAsync();
+
+            return entities;
+        }
+
+        /// <summary>
+        /// Gets all sessions where a specific user is a participant
+        /// </summary>
+        public async Task<List<SessionSummary>> GetSessionsWhereUserIsParticipantAsync(Guid userId)
+        {
+            var sessionCodes = await _context.Participants
+                .Where(p => p.UserId == userId)
+                .Select(p => p.SessionCode)
+                .Distinct()
+                .ToListAsync();
+
+            var entities = await _context.Sessions
+                .Where(s => sessionCodes.Contains(s.Code))
+                .Select(s => new SessionSummary
+                {
+                    Code = s.Code,
+                    EventName = s.EventName,
+                    CreatedAtUtc = s.CreatedAtUtc,
+                    ExpiresAtUtc = s.ExpiresAtUtc,
+                    IsGameStarted = s.IsGameStarted,
+                    IsGameEnded = s.IsGameEnded,
+                    Archived = s.Archived,
+                    ParticipantCount = s.Participants.Count
+                })
+                .OrderByDescending(s => s.CreatedAtUtc)
                 .ToListAsync();
 
             return entities;

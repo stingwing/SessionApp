@@ -131,7 +131,7 @@ namespace SessionApp.Services
             });
         }
 
-        public RoomSession CreateSession(string hostId, int codeLength = 6, TimeSpan? ttl = null, string? eventName = null)
+        public RoomSession CreateSession(string hostId, int codeLength = 6, TimeSpan? ttl = null, string? eventName = null, Guid? hostUserId = null)
         {
             if (string.IsNullOrWhiteSpace(hostId))
                 throw new ArgumentException("hostId is required", nameof(hostId));
@@ -150,6 +150,7 @@ namespace SessionApp.Services
                 {
                     Code = code,
                     HostId = hostId,
+                    HostUserId = hostUserId, // Store the optional host UserId
                     CreatedAtUtc = now,
                     ExpiresAtUtc = now.Add(ttl.Value),
                     LastModifiedAtUtc = now,
@@ -167,7 +168,7 @@ namespace SessionApp.Services
             throw new InvalidOperationException("Unable to generate a unique room code. Try increasing code length.");
         }
 
-        public string TryJoin(RoomSession session,string code, string participantId, string participantName = "", string commander = "")
+        public string TryJoin(RoomSession session,string code, string participantId, string participantName = "", string commander = "", Guid? userId = null)
         {
             if (string.IsNullOrWhiteSpace(code))
                 return $"Code Doesn't Exist";
@@ -177,7 +178,7 @@ namespace SessionApp.Services
 
             if (participantName == string.Empty)
                 participantName = participantId;
-               
+
             var key = code.ToUpperInvariant();
 
             if (session.IsExpiredUtc())
@@ -195,7 +196,8 @@ namespace SessionApp.Services
                 Id = participantId,
                 Name = participantName,
                 JoinedAtUtc = DateTime.UtcNow,
-                Commander = commander
+                Commander = commander,
+                UserId = userId  // Store the optional participant UserId
             };
 
             if (session.Participants.ContainsKey(participantId))
@@ -203,7 +205,7 @@ namespace SessionApp.Services
 
             session.Participants.AddOrUpdate(participantId, participant, (_, __) => participant);
             session.LastModifiedAtUtc = DateTime.UtcNow; // Add this
-            
+
             // Save to database (fire and forget)
             SaveSessionToDatabaseFireAndForget(session);
 

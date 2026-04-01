@@ -12,6 +12,7 @@ namespace SessionApp.Data
         public DbSet<GroupParticipantEntity> GroupParticipants { get; set; }
         public DbSet<ArchivedRoundEntity> ArchivedRounds { get; set; }
         public DbSet<CommanderEntity> Commanders { get; set; }
+        public DbSet<UserEntity> Users { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -26,6 +27,13 @@ namespace SessionApp.Data
                 entity.Property(e => e.Archived).HasDefaultValue(false);
                 entity.HasIndex(e => e.ExpiresAtUtc);
                 entity.HasIndex(e => e.Archived);
+
+                // Optional foreign key to User table (for registered hosts)
+                entity.HasOne(e => e.HostUser)
+                    .WithMany()
+                    .HasForeignKey(e => e.HostUserId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                entity.HasIndex(e => e.HostUserId);
             });
 
             modelBuilder.Entity<ParticipantEntity>(entity =>
@@ -41,6 +49,13 @@ namespace SessionApp.Data
                     .WithMany(s => s.Participants)
                     .HasForeignKey(e => e.SessionCode)
                     .OnDelete(DeleteBehavior.Cascade);
+
+                // Optional foreign key to User table (for registered players)
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                entity.HasIndex(e => e.UserId);
             });
 
             modelBuilder.Entity<GroupEntity>(entity =>
@@ -95,6 +110,19 @@ namespace SessionApp.Data
                 entity.Property(e => e.LegalitiesJson).HasDefaultValue("{}").HasColumnType("jsonb");
                 entity.HasIndex(e => e.Name);
                 entity.HasIndex(e => e.LastUpdatedUtc);
+            });
+
+            modelBuilder.Entity<UserEntity>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Username).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Email).IsRequired().HasMaxLength(256);
+                entity.Property(e => e.PasswordHash).IsRequired();
+                entity.Property(e => e.DisplayName).HasMaxLength(100);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                entity.Property(e => e.EmailConfirmed).HasDefaultValue(false);
+                entity.HasIndex(e => e.Username).IsUnique();
+                entity.HasIndex(e => e.Email).IsUnique();
             });
         }
     }

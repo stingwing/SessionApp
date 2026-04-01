@@ -111,6 +111,18 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 50
             }));
 
+    // Authentication policy - strict rate limiting to prevent brute force attacks
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: partition => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,  // Only 10 auth attempts per minute per IP
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 2  // Very small queue for auth requests
+            }));
+
     // Sliding window for API endpoints (more granular control)
     options.AddPolicy("api", httpContext =>
         RateLimitPartition.GetSlidingWindowLimiter(
@@ -212,6 +224,12 @@ builder.Services.AddScoped<GameActionService>();
 // Register room/session service as singleton without repository dependency
 // Repository will be resolved per-request via IServiceProvider
 builder.Services.AddSingleton<RoomCodeService>();
+
+// Register User Authentication Services
+builder.Services.AddScoped<UserService>();
+// Register ASP.NET Core Identity's PasswordHasher for secure password hashing
+builder.Services.AddScoped<Microsoft.AspNetCore.Identity.IPasswordHasher<SessionApp.Data.Entities.UserEntity>, 
+    Microsoft.AspNetCore.Identity.PasswordHasher<SessionApp.Data.Entities.UserEntity>>();
 
 // This creates an HttpClient specifically for ScryfallService
 builder.Services.AddHttpClient<ScryfallService>(client =>
