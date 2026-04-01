@@ -486,8 +486,6 @@ namespace SessionApp.Services
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(participantId))
                 return ReportOutcomeResult.Invalid;
 
-            if (session.Groups == null)
-                return ReportOutcomeResult.Invalid;
 
             lock (session)
             {
@@ -507,6 +505,9 @@ namespace SessionApp.Services
                     removedParticipant = participant;
                     return ReportOutcomeResult.Success;
                 }
+
+                if (session.Groups == null)
+                    return ReportOutcomeResult.Invalid;
 
                 //Update commander going forward
                 var participantExists = session.Participants.ContainsKey(participantId);

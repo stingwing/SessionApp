@@ -58,9 +58,29 @@ namespace SessionApp.Data.Entities
             /// </summary>
             public DateTime? LockoutEndUtc { get; set; }
 
-            /// <summary>
-            /// Indicates if the account is currently locked
-            /// </summary>
-            public bool IsLockedOut => LockoutEndUtc.HasValue && LockoutEndUtc.Value > DateTime.UtcNow;
-        }
-}
+                    /// <summary>
+                    /// Indicates if the account is currently locked
+                    /// </summary>
+                    public bool IsLockedOut => LockoutEndUtc.HasValue && LockoutEndUtc.Value > DateTime.UtcNow;
+
+                    /// <summary>
+                    /// Email verification token (hashed)
+                    /// </summary>
+                    public string? EmailVerificationToken { get; set; }
+
+                    /// <summary>
+                    /// When the email verification token expires
+                    /// </summary>
+                    public DateTime? EmailVerificationTokenExpiresUtc { get; set; }
+
+                    /// <summary>
+                    /// Password reset token (hashed)
+                    /// </summary>
+                    public string? PasswordResetToken { get; set; }
+
+                    /// <summary>
+                    /// When the password reset token expires
+                    /// </summary>
+                    public DateTime? PasswordResetTokenExpiresUtc { get; set; }
+                }
+            }

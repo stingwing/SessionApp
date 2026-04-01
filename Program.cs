@@ -227,6 +227,7 @@ builder.Services.AddSingleton<RoomCodeService>();
 
 // Register User Authentication Services
 builder.Services.AddScoped<UserService>();
+builder.Services.AddScoped<EmailService>();
 // Register ASP.NET Core Identity's PasswordHasher for secure password hashing
 builder.Services.AddScoped<Microsoft.AspNetCore.Identity.IPasswordHasher<SessionApp.Data.Entities.UserEntity>, 
     Microsoft.AspNetCore.Identity.PasswordHasher<SessionApp.Data.Entities.UserEntity>>();

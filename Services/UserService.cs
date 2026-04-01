@@ -5,6 +5,7 @@ using SessionApp.Data.Entities;
 using SessionApp.Models;
 using System;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 
 namespace SessionApp.Services
@@ -223,6 +224,196 @@ namespace SessionApp.Services
         public async Task<bool> IsValidUserAsync(Guid userId)
         {
             return await _context.Users.AnyAsync(u => u.Id == userId && u.IsActive);
+        }
+
+        /// <summary>
+        /// Generates a secure random token for email verification or password reset
+        /// </summary>
+        private string GenerateSecureToken()
+        {
+            var randomBytes = new byte[32];
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(randomBytes);
+            }
+            return Convert.ToBase64String(randomBytes).Replace("+", "-").Replace("/", "_").Replace("=", "");
+        }
+
+        /// <summary>
+        /// Hashes a token for storage (prevents token theft if database is compromised)
+        /// </summary>
+        private string HashToken(string token)
+        {
+            using var sha256 = SHA256.Create();
+            var hashedBytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(token));
+            return Convert.ToBase64String(hashedBytes);
+        }
+
+        /// <summary>
+        /// Generates email verification token and stores hashed version
+        /// </summary>
+        public async Task<string> GenerateEmailVerificationTokenAsync(Guid userId)
+        {
+            // Ensure we get a fresh user entity from the database
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Id == userId);
+
+            if (user == null)
+            {
+                _logger.LogError("User not found when generating email verification token. UserId: {UserId}", userId);
+                throw new InvalidOperationException("User not found");
+            }
+
+            var token = GenerateSecureToken();
+            var hashedToken = HashToken(token);
+
+            user.EmailVerificationToken = hashedToken;
+            user.EmailVerificationTokenExpiresUtc = DateTime.UtcNow.AddHours(24);
+
+            _logger.LogInformation("Generated email verification token for user: {Username} (ID: {UserId}). Hashed token length: {Length}. Expires: {Expiry}", 
+                user.Username, user.Id, hashedToken.Length, user.EmailVerificationTokenExpiresUtc);
+
+            try
+            {
+                // Mark the entity as modified to ensure EF tracks the changes
+                _context.Entry(user).State = EntityState.Modified;
+
+                var changeCount = await _context.SaveChangesAsync();
+                _logger.LogInformation("Successfully saved email verification token to database for user: {Username}. Changes saved: {ChangeCount}", 
+                    user.Username, changeCount);
+
+                if (changeCount == 0)
+                {
+                    _logger.LogWarning("SaveChangesAsync returned 0 changes for user: {Username}. Token may not have been saved!", user.Username);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to save email verification token to database for user: {Username}", user.Username);
+                throw;
+            }
+
+            return token;
+        }
+
+        /// <summary>
+        /// Verifies email using the verification token
+        /// </summary>
+        public async Task<(bool Success, string? ErrorMessage)> VerifyEmailAsync(string token)
+        {
+            var hashedToken = HashToken(token);
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.EmailVerificationToken == hashedToken);
+
+            if (user == null)
+            {
+                return (false, "Invalid verification token");
+            }
+
+            if (user.EmailVerificationTokenExpiresUtc == null || user.EmailVerificationTokenExpiresUtc < DateTime.UtcNow)
+            {
+                return (false, "Verification token has expired");
+            }
+
+            if (user.EmailConfirmed)
+            {
+                return (false, "Email is already verified");
+            }
+
+            user.EmailConfirmed = true;
+            user.EmailVerificationToken = null;
+            user.EmailVerificationTokenExpiresUtc = null;
+
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("Email verified for user: {Username}", user.Username);
+
+            return (true, null);
+        }
+
+        /// <summary>
+        /// Generates password reset token and stores hashed version
+        /// </summary>
+        public async Task<(bool Success, string? ErrorMessage, string? Token, UserEntity? User)> GeneratePasswordResetTokenAsync(string email)
+        {
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email.ToLower() == email.ToLower());
+
+            if (user == null)
+            {
+                // Return success even if user doesn't exist to prevent email enumeration
+                _logger.LogWarning("Password reset requested for non-existent email: {Email}", email);
+                return (true, null, null, null);
+            }
+
+            if (!user.IsActive)
+            {
+                return (false, "Account is disabled", null, null);
+            }
+
+            var token = GenerateSecureToken();
+            user.PasswordResetToken = HashToken(token);
+            user.PasswordResetTokenExpiresUtc = DateTime.UtcNow.AddHours(1);
+
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("Password reset token generated for user: {Username}", user.Username);
+
+            return (true, null, token, user);
+        }
+
+        /// <summary>
+        /// Resets password using the reset token
+        /// </summary>
+        public async Task<(bool Success, string? ErrorMessage)> ResetPasswordAsync(string token, string newPassword)
+        {
+            var hashedToken = HashToken(token);
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.PasswordResetToken == hashedToken);
+
+            if (user == null)
+            {
+                return (false, "Invalid reset token");
+            }
+
+            if (user.PasswordResetTokenExpiresUtc == null || user.PasswordResetTokenExpiresUtc < DateTime.UtcNow)
+            {
+                return (false, "Reset token has expired");
+            }
+
+            // Hash new password
+            user.PasswordHash = _passwordHasher.HashPassword(user, newPassword);
+            user.PasswordResetToken = null;
+            user.PasswordResetTokenExpiresUtc = null;
+
+            // Reset failed login attempts and lockout
+            user.FailedLoginAttempts = 0;
+            user.LockoutEndUtc = null;
+
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("Password reset successfully for user: {Username}", user.Username);
+
+            return (true, null);
+        }
+
+        /// <summary>
+        /// Resends email verification token
+        /// </summary>
+        public async Task<(bool Success, string? ErrorMessage, string? Token, UserEntity? User)> ResendEmailVerificationAsync(string email)
+        {
+            var user = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email.ToLower() == email.ToLower());
+
+            if (user == null)
+            {
+                return (false, "User not found", null, null);
+            }
+
+            if (user.EmailConfirmed)
+            {
+                return (false, "Email is already verified", null, null);
+            }
+
+            var token = await GenerateEmailVerificationTokenAsync(user.Id);
+            return (true, null, token, user);
         }
     }
 }
