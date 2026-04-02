@@ -1,19 +1,31 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.OpenApi;
+using Microsoft.IdentityModel.Tokens;
 using SessionApp.Data;
 using SessionApp.Hubs;
 using SessionApp.Services;
 using System.IO.Compression;
+using System.Text;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// SECURITY: Add anti-forgery protection
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+    options.Cookie.Name = "X-CSRF-TOKEN";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+});
 
 // Add Response Compression with Brotli
 builder.Services.AddResponseCompression(options =>
@@ -109,6 +121,18 @@ builder.Services.AddRateLimiter(options =>
                 Window = TimeSpan.FromMinutes(1),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 QueueLimit = 50
+            }));
+
+    // Authentication policy - strict rate limiting to prevent brute force attacks
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: partition => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,  // Only 10 auth attempts per minute per IP
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 2  // Very small queue for auth requests
             }));
 
     // Sliding window for API endpoints (more granular control)
@@ -213,6 +237,71 @@ builder.Services.AddScoped<GameActionService>();
 // Repository will be resolved per-request via IServiceProvider
 builder.Services.AddSingleton<RoomCodeService>();
 
+// Register User Authentication Services
+builder.Services.AddScoped<UserService>();
+builder.Services.AddScoped<EmailService>();
+builder.Services.AddScoped<JwtTokenService>();
+// Register ASP.NET Core Identity's PasswordHasher for secure password hashing
+builder.Services.AddScoped<Microsoft.AspNetCore.Identity.IPasswordHasher<SessionApp.Data.Entities.UserEntity>, 
+    Microsoft.AspNetCore.Identity.PasswordHasher<SessionApp.Data.Entities.UserEntity>>();
+
+// Configure JWT Authentication
+var jwtSecret = builder.Configuration["Jwt:Secret"];
+if (string.IsNullOrEmpty(jwtSecret))
+{
+    Console.WriteLine("WARNING: JWT Secret is not configured. Please set 'Jwt:Secret' in User Secrets or Environment Variables.");
+    Console.WriteLine("For development, run: dotnet user-secrets set \"Jwt:Secret\" \"your-secret-key-min-32-chars-long-CHANGE-THIS-IN-PRODUCTION\"");
+
+    // Only throw in production - allow development to continue with warning
+    if (!builder.Environment.IsDevelopment())
+    {
+        throw new InvalidOperationException("JWT Secret must be configured for production.");
+    }
+}
+else if (jwtSecret.Length < 32)
+{
+    throw new InvalidOperationException("JWT Secret must be at least 32 characters long for security.");
+}
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        ValidAudience = builder.Configuration["Jwt:Audience"],
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret ?? "")),
+        ClockSkew = TimeSpan.Zero
+    };
+
+    // Allow JWT in SignalR connections
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+            {
+                context.Token = accessToken;
+            }
+
+            return Task.CompletedTask;
+        }
+    };
+});
+
+builder.Services.AddAuthorization();
+
 // This creates an HttpClient specifically for ScryfallService
 builder.Services.AddHttpClient<ScryfallService>(client =>
 {
@@ -227,16 +316,9 @@ builder.Services.AddHostedService<CommanderSyncHostedService>();
 builder.Services.AddSignalR();
 
 // OpenAPI / Swagger
+// OpenAPI / Swagger
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options =>
-{
-    options.SwaggerDoc("v1", new OpenApiInfo
-    {
-        Title = "SessionApp API",
-        Version = "v1",
-        Description = "API for creating, joining and querying rooms"
-    });
-});
+builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
@@ -300,13 +382,47 @@ app.UseSwaggerUI(options =>
 // IMPORTANT: Response compression must be early in the pipeline
 app.UseResponseCompression();
 
+// SECURITY: HTTPS enforcement
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts(); // Enforce HTTPS with Strict-Transport-Security header
+}
 app.UseHttpsRedirection();
+
+// SECURITY: Add security headers middleware
+app.Use(async (context, next) =>
+{
+    // Prevent clickjacking
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+
+    // Prevent MIME type sniffing
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+
+    // XSS Protection (legacy browsers)
+    context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
+
+    // Content Security Policy
+    context.Response.Headers["Content-Security-Policy"] = 
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'";
+
+    // Referrer Policy
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+
+    // Permissions Policy
+    context.Response.Headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()";
+
+    await next();
+});
+
 app.UseCors("AllowAll");
 
 // IMPORTANT: Rate limiting must come before authorization
 app.UseRateLimiter();
 
+// IMPORTANT: Authentication must come before Authorization
+app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 app.MapHub<RoomsHub>("/hubs/rooms");
 

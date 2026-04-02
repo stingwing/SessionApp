@@ -18,7 +18,8 @@ namespace SessionApp.Helpers
                 p.Order,
                 p.Dropped,
                 p.AutoFill,
-                p.InCustomGroup
+                p.InCustomGroup,
+                p.UserId  // Include the optional UserId
             );
         }
 
@@ -77,6 +78,7 @@ namespace SessionApp.Helpers
                 session.Code,
                 session.EventName,
                 session.HostId,
+                session.HostUserId,  // Include the optional HostUserId
                 session.CreatedAtUtc,
                 session.ExpiresAtUtc,
                 session.IsGameStarted,

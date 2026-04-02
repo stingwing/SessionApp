@@ -69,11 +69,15 @@ namespace SessionApp.Controllers
                 return BadRequest(new { message = "HostId cannot be empty after sanitization" });
             }
 
+            // Optional: If UserId is provided, the host is a registered user
+            // This can be used for future features like session history, analytics, etc.
+
             var session = _roomService.CreateSession(
                 sanitizedHostId,
                 request.CodeLength,
                 request.Ttl ?? TimeSpan.FromDays(7),
-                sanitizedEventName);
+                sanitizedEventName,
+                request.UserId); // Pass the optional UserId
 
             // Notify connected clients (optional: clients may join groups by room code)
             await _hubContext.Clients.Group(session.Code).SendAsync("RoomCreated",
@@ -108,11 +112,15 @@ namespace SessionApp.Controllers
             {
                 return BadRequest(new { message = "ParticipantId cannot be empty" });
             }
+
+            // Optional: If UserId is provided, the participant is a registered user
+            // This can be used for future features like player stats, match history, etc.
+
             var session = await _roomService.GetSessionAsync(sanitizedCode);
             if (session is null)
                 return NotFound(new { message = "Room not found or expired" });
 
-            var ok = _roomService.TryJoin(session, sanitizedCode, sanitizedParticipantId, sanitizedParticipantName, sanitizedCommander);
+            var ok = _roomService.TryJoin(session, sanitizedCode, sanitizedParticipantId, sanitizedParticipantName, sanitizedCommander, request.UserId); // Pass the optional UserId
 
             if (!ok.Contains("Success"))
                 return NotFound(new { message = ok });
@@ -157,6 +165,7 @@ namespace SessionApp.Controllers
                 session.Code,
                 session.EventName,
                 session.HostId,
+                session.HostUserId,  // Include the optional HostUserId
                 session.CreatedAtUtc,
                 session.ExpiresAtUtc,
                 session.Participants.Count,
@@ -184,6 +193,9 @@ namespace SessionApp.Controllers
 
             var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
             var sanitizedHostId = InputSanitizer.SanitizeString(request.HostId);
+
+            // Optional: If UserId is provided, the host is a registered user
+            // This allows for future features like audit trails and session ownership verification
 
             var session = await _roomService.GetSessionAsync(sanitizedCode);
             if (session is null)
@@ -263,6 +275,9 @@ namespace SessionApp.Controllers
 
             var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
             var sanitizedHostId = InputSanitizer.SanitizeString(request.HostId);
+
+            // Optional: If UserId is provided, track which registered user is performing game actions
+            // This enables future features like host transfer, co-hosting, and action history
 
             var session = await _roomService.GetSessionAsync(sanitizedCode);
             if (session is null)
@@ -565,6 +580,9 @@ namespace SessionApp.Controllers
             var sanitizedCommander = InputSanitizer.SanitizeString(request.Commander);
             var sanitizedStatistics = InputSanitizer.SanitizeDictionary(request.Statistics);
 
+            // Optional: If UserId is provided, the participant is a registered user
+            // This enables tracking of match results, win rates, and player statistics
+
             var normalized = InputSanitizer.SanitizeString(request.Result).ToLowerInvariant();
             if (normalized != "win" && normalized != "draw" && normalized != "drop" && normalized != "data")
                 return BadRequest(new { message = "result must be one of: win, draw, drop, data" });
@@ -785,6 +803,8 @@ public async Task<IActionResult> DeleteSession(
         return Unauthorized(new { message = "Invalid password" });
     }
 
+    // Optional: If UserId is provided, log which user initiated the deletion for audit purposes
+
     var sanitizedCode = InputSanitizer.SanitizeString(code).ToUpperInvariant();
     
     // Verify session exists before attempting deletion
@@ -822,7 +842,10 @@ public async Task<IActionResult> DeleteSession(
         TimeSpan? Ttl = null,
 
         [SafeString(MinLength = 0, MaxLength = 200)]
-        string? EventName = null
+        string? EventName = null,
+
+        // Optional: UserId if the host has a registered account
+        Guid? UserId = null
     );
 
     public record CreateRoomResponse(
@@ -839,7 +862,10 @@ public async Task<IActionResult> DeleteSession(
         string ParticipantName,
 
         [SafeString(MinLength = 0, MaxLength = 200)]
-        string Commander
+        string Commander,
+
+        // Optional: UserId if the participant has a registered account
+        Guid? UserId = null
     );
 
     public record ReportOutcomeRequest(
@@ -855,7 +881,10 @@ public async Task<IActionResult> DeleteSession(
         string Commander,
 
         [DictionarySizeLimit(MaxKeys = 20, MaxValueLength = 500)]
-        Dictionary<string, object>? Statistics = null
+        Dictionary<string, object>? Statistics = null,
+
+        // Optional: UserId if the participant has a registered account
+        Guid? UserId = null
     );
 
     public record RoomSettingsResponse(
@@ -885,13 +914,15 @@ public async Task<IActionResult> DeleteSession(
         int Order,
         bool Dropped,
         bool AutoFill,
-        Guid InCustomGroup
+        Guid InCustomGroup,
+        Guid? UserId  // Optional: UserId if participant is a registered user
     );
 
     public record GetRoomResponse(
         string Code,
         string EventName,
         string HostId,
+        Guid? HostUserId,  // Optional: UserId if host is a registered user
         DateTime CreatedAtUtc,
         DateTime ExpiresAtUtc,
         int ParticipantCount,
@@ -923,13 +954,19 @@ public async Task<IActionResult> DeleteSession(
         bool AllowCustomGroups = false,
         bool AllowPlayersToCreateCustomGroups = false,
         bool TournamentMode = false,
-        int MaxRounds = 10000
+        int MaxRounds = 10000,
+
+        // Optional: UserId if the host has a registered account
+        Guid? UserId = null
     );
 
     public record EndSessionRequest(
         [Required(ErrorMessage = "HostId is required")]
         [SafeString(MinLength = 3, MaxLength = 100)]
-        string HostId
+        string HostId,
+
+        // Optional: UserId if the host has a registered account
+        Guid? UserId = null
     );
 
     public record HandleGameRequest(
@@ -950,7 +987,10 @@ public async Task<IActionResult> DeleteSession(
         // New fields for custom groups
         List<string>? ParticipantIds = null,
         bool AutoFill = true,
-        Guid CustomGroupId = default
+        Guid CustomGroupId = default,
+
+        // Optional: UserId if the host/participant has a registered account
+        Guid? UserId = null
     );
 
     public record GroupResponse(
@@ -1002,6 +1042,7 @@ public async Task<IActionResult> DeleteSession(
         string Code,
         string EventName,
         string HostId,
+        Guid? HostUserId,  // Optional: UserId if host is a registered user
         DateTime CreatedAtUtc,
         DateTime ExpiresAtUtc,
         bool IsGameStarted,
@@ -1020,7 +1061,10 @@ public async Task<IActionResult> DeleteSession(
     public record ValidateHostRequest(
         [Required(ErrorMessage = "HostId is required")]
         [SafeString(MinLength = 3, MaxLength = 100)]
-        string HostId
+        string HostId,
+
+        // Optional: UserId if the host has a registered account
+        Guid? UserId = null
     );
 
     public record ValidateHostResponse(
@@ -1030,6 +1074,9 @@ public async Task<IActionResult> DeleteSession(
     public record DeleteSessionRequest(
         [Required(ErrorMessage = "Password is required")]
         [SafeString(MinLength = 1, MaxLength = 200)]
-        string Password
+        string Password,
+
+        // Optional: UserId if the requester has a registered account (for audit trail)
+        Guid? UserId = null
     );
 }

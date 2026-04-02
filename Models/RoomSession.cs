@@ -25,6 +25,10 @@ namespace SessionApp.Models
     {
         public string Code { get; init; } = null!;
         public string HostId { get; init; } = null!;
+
+        // Optional: If the host is a registered user, their UserId is stored here
+        public Guid? HostUserId { get; set; }
+
         public DateTime CreatedAtUtc { get; init; }
         public DateTime ExpiresAtUtc { get; set; }
         public DateTime LastModifiedAtUtc { get; set; } // Add this property
@@ -108,6 +112,9 @@ namespace SessionApp.Models
         public int Order { get; set; } = 0;
         public Guid InCustomGroup { get; set; } = Guid.Empty;
         public bool AutoFill { get; set; } = false;
+
+        // Optional: If the participant is a registered user, their UserId is stored here
+        public Guid? UserId { get; set; }
     }
 
     // Represents a single group (up to 4 participants) and its per-round state.
