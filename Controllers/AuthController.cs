@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using SessionApp.Data;
@@ -5,6 +6,7 @@ using SessionApp.Models;
 using SessionApp.Services;
 using System;
 using System.Collections.Generic;
+using System.Security.Claims;
 using System.Threading.Tasks;
 
 namespace SessionApp.Controllers
@@ -15,6 +17,7 @@ namespace SessionApp.Controllers
     {
         private readonly UserService _userService;
         private readonly SessionRepository _sessionRepository;
+        private readonly JwtTokenService _jwtTokenService;
         private readonly ILogger<AuthController> _logger;
         private readonly EmailService _emailService;
         private readonly IConfiguration _configuration;
@@ -22,23 +25,25 @@ namespace SessionApp.Controllers
         public AuthController(
             UserService userService, 
             SessionRepository sessionRepository,
+            JwtTokenService jwtTokenService,
             ILogger<AuthController> logger,
             EmailService emailService,
             IConfiguration configuration)
         {
             _userService = userService;
             _sessionRepository = sessionRepository;
+            _jwtTokenService = jwtTokenService;
             _logger = logger;
             _emailService = emailService;
             _configuration = configuration;
         }
 
         /// <summary>
-        /// Register a new user account
+        /// Register a new user account and return JWT token
         /// </summary>
         [HttpPost("register")]
         [EnableRateLimiting("auth")]
-        [ProducesResponseType(typeof(UserProfile), StatusCodes.Status201Created)]
+        [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status201Created)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
         public async Task<IActionResult> Register([FromBody] RegisterRequest request)
@@ -95,26 +100,28 @@ namespace SessionApp.Controllers
                 }
             }
 
-            var profile = new UserProfile
+            // Generate JWT token for immediate login after registration
+            var token = _jwtTokenService.GenerateToken(user);
+
+            var response = new AuthResponse
             {
                 UserId = user.Id,
                 Username = user.Username,
                 Email = user.Email,
                 DisplayName = user.DisplayName,
-                CreatedAtUtc = user.CreatedAtUtc,
-                LastLoginUtc = user.LastLoginUtc,
-                EmailConfirmed = user.EmailConfirmed
+                Token = token,
+                ExpiresAt = DateTime.UtcNow.AddDays(7)
             };
 
-            return CreatedAtAction(nameof(GetProfile), new { userId = user.Id }, profile);
+            return CreatedAtAction(nameof(GetProfile), new { userId = user.Id }, response);
         }
 
         /// <summary>
-        /// Login with username/email and password
+        /// Login with username/email and password, returns JWT token
         /// </summary>
         [HttpPost("login")]
         [EnableRateLimiting("auth")]
-        [ProducesResponseType(typeof(UserProfile), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
         public async Task<IActionResult> Login([FromBody] LoginRequest request)
@@ -131,29 +138,34 @@ namespace SessionApp.Controllers
                 return Unauthorized(new { message = errorMessage });
             }
 
-            var profile = new UserProfile
+            // Generate JWT token
+            var token = _jwtTokenService.GenerateToken(user);
+            var expiryDays = _configuration.GetValue<int>("Jwt:ExpiryDays", 30);
+
+            var response = new AuthResponse
             {
                 UserId = user.Id,
                 Username = user.Username,
                 Email = user.Email,
                 DisplayName = user.DisplayName,
-                CreatedAtUtc = user.CreatedAtUtc,
-                LastLoginUtc = user.LastLoginUtc,
-                EmailConfirmed = user.EmailConfirmed
+                Token = token,
+                ExpiresAt = DateTime.UtcNow.AddDays(expiryDays)
             };
 
-            return Ok(profile);
+            return Ok(response);
         }
 
         /// <summary>
-        /// Change user password (requires current password)
+        /// Change user password (requires authentication and current password)
         /// </summary>
         [HttpPost("change-password")]
+        [Authorize] // SECURITY: Requires authentication
         [EnableRateLimiting("auth")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
-        public async Task<IActionResult> ChangePassword([FromQuery] Guid userId, [FromBody] ChangePasswordRequest request)
+        public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
         {
             if (!ModelState.IsValid)
             {
@@ -165,7 +177,15 @@ namespace SessionApp.Controllers
                 return BadRequest(new { message = "Validation failed", errors = errors });
             }
 
-            var (success, errorMessage) = await _userService.ChangePasswordAsync(userId, request);
+            // Get authenticated user's ID from JWT token
+            var userId = _jwtTokenService.GetUserIdFromToken(User);
+
+            if (userId == null)
+            {
+                return Unauthorized(new { message = "Invalid token" });
+            }
+
+            var (success, errorMessage) = await _userService.ChangePasswordAsync(userId.Value, request);
 
             if (!success)
             {
@@ -176,10 +196,10 @@ namespace SessionApp.Controllers
         }
 
         /// <summary>
-        /// Get user profile by ID
+        /// Get public user profile by ID (email hidden for privacy)
         /// </summary>
         [HttpGet("profile/{userId}")]
-        [ProducesResponseType(typeof(UserProfile), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(PublicUserProfile), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> GetProfile(Guid userId)
         {
@@ -190,29 +210,64 @@ namespace SessionApp.Controllers
                 return NotFound(new { message = "User not found" });
             }
 
-            var profile = new UserProfile
+            var profile = new PublicUserProfile
             {
                 UserId = user.Id,
                 Username = user.Username,
-                Email = user.Email,
                 DisplayName = user.DisplayName,
                 CreatedAtUtc = user.CreatedAtUtc,
-                LastLoginUtc = user.LastLoginUtc,
-                EmailConfirmed = user.EmailConfirmed
+                LastLoginUtc = user.LastLoginUtc
             };
 
             return Ok(profile);
         }
 
         /// <summary>
-        /// Get user profile by username
+        /// Get public user profile by username (email hidden for privacy)
         /// </summary>
         [HttpGet("profile/username/{username}")]
-        [ProducesResponseType(typeof(UserProfile), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(PublicUserProfile), StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> GetProfileByUsername(string username)
         {
             var user = await _userService.GetUserByUsernameAsync(username);
+
+            if (user == null)
+            {
+                return NotFound(new { message = "User not found" });
+            }
+
+            var profile = new PublicUserProfile
+            {
+                UserId = user.Id,
+                Username = user.Username,
+                DisplayName = user.DisplayName,
+                CreatedAtUtc = user.CreatedAtUtc,
+                LastLoginUtc = user.LastLoginUtc
+            };
+
+            return Ok(profile);
+        }
+
+        /// <summary>
+        /// Get authenticated user's own profile (includes email and confirmation status)
+        /// </summary>
+        [HttpGet("profile/me")]
+        [Authorize] // SECURITY: Requires authentication
+        [ProducesResponseType(typeof(UserProfile), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> GetMyProfile()
+        {
+            // Get authenticated user's ID from JWT token
+            var userId = _jwtTokenService.GetUserIdFromToken(User);
+
+            if (userId == null)
+            {
+                return Unauthorized(new { message = "Invalid token" });
+            }
+
+            var user = await _userService.GetUserByIdAsync(userId.Value);
 
             if (user == null)
             {

@@ -41,7 +41,8 @@ namespace SessionApp.Services
 
             if (existingUser != null)
             {
-                return (false, "Username already exists", null);
+                // Use generic message to prevent user enumeration
+                return (false, "Registration failed. Please check your information and try again.", null);
             }
 
             // Check if email already exists
@@ -50,7 +51,8 @@ namespace SessionApp.Services
 
             if (existingUser != null)
             {
-                return (false, "Email already exists", null);
+                // Use generic message to prevent user enumeration
+                return (false, "Registration failed. Please check your information and try again.", null);
             }
 
             // Create new user entity
@@ -73,12 +75,12 @@ namespace SessionApp.Services
                 _context.Users.Add(user);
                 await _context.SaveChangesAsync();
 
-                _logger.LogInformation("User registered successfully: {Username}", user.Username);
+                _logger.LogInformation("User registered successfully with ID: {UserId}", user.Id);
                 return (true, null, user);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error registering user: {Username}", request.Username);
+                _logger.LogError(ex, "Error registering user");
                 return (false, "An error occurred during registration", null);
             }
         }

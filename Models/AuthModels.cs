@@ -74,6 +74,15 @@ namespace SessionApp.Models
         public bool EmailConfirmed { get; set; }
     }
 
+    public class PublicUserProfile
+    {
+        public Guid UserId { get; set; }
+        public string Username { get; set; } = null!;
+        public string? DisplayName { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+        public DateTime? LastLoginUtc { get; set; }
+    }
+
     public class ForgotPasswordRequest
     {
         [Required(ErrorMessage = "Email is required")]
