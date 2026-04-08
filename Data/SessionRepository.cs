@@ -334,7 +334,7 @@ namespace SessionApp.Data
                 {
                     Id = p.ParticipantId,
                     Name = p.Name,
-                    Commander = string.Empty,
+                    Commander = p.Commander,
                     Points = p.Points,
                     JoinedAtUtc = p.JoinedAtUtc,
                     Dropped = p.Dropped,
