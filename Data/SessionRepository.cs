@@ -170,7 +170,8 @@ namespace SessionApp.Data
                         Name = participant.Name,
                         JoinedAtUtc = participant.JoinedAtUtc,
                         Order = participant.Order,
-                        AutoFill = participant.AutoFill
+                        AutoFill = participant.AutoFill,
+                        Commander = participant.Commander
                     });
                 }
             }
@@ -333,12 +334,12 @@ namespace SessionApp.Data
                 {
                     Id = p.ParticipantId,
                     Name = p.Name,
-                    Commander = p.Commander,
+                    Commander = string.Empty,
                     Points = p.Points,
                     JoinedAtUtc = p.JoinedAtUtc,
                     Dropped = p.Dropped,
                     InCustomGroup = p.InCustomGroup,
-                    UserId = p.UserId  // Load the optional participant UserId
+                    UserId = p.UserId
                 };
             }
 
@@ -391,26 +392,34 @@ namespace SessionApp.Data
             // Load participants ordered by Order property
             foreach (var p in entity.GroupParticipants.OrderBy(gp => gp.Order))
             {
+                session.Participants.TryGetValue(p.ParticipantId, out var sessionParticipant);
+
+                // Backward compatibility: Fall back to Participant.Commander if GroupParticipant.Commander is empty
+                // This handles existing data before the Commander field was moved to GroupParticipants
+                var commander = !string.IsNullOrEmpty(p.Commander) 
+                    ? p.Commander 
+                    : (sessionParticipant?.Commander ?? string.Empty);
+
                 var participant = new Participant
                 {
                     Id = p.ParticipantId,
                     Name = p.Name,
                     JoinedAtUtc = p.JoinedAtUtc,
                     Order = p.Order,   
-                    AutoFill = p.AutoFill
+                    AutoFill = p.AutoFill,
+                    Commander = commander
                 };
-
-                session.Participants.TryGetValue(p.ParticipantId, out var sessionParticipant);
 
                 if (sessionParticipant != null) 
                 {
                     if (!archive)
                     {
                         sessionParticipant.Order = participant.Order;
+                        sessionParticipant.Commander = commander;
                     }
-                    sessionParticipant.AutoFill = participant.AutoFill; // this is likely incorrect for archived rounds, but we don't have a way to store it currently
-                    participant.Commander = sessionParticipant.Commander; // this should probably get the commander from statistics for archived rounds
-                    participant.InCustomGroup = sessionParticipant.InCustomGroup; // this is likely incorrect 
+                    sessionParticipant.AutoFill = participant.AutoFill;
+                    participant.InCustomGroup = sessionParticipant.InCustomGroup;
+                    participant.UserId = sessionParticipant.UserId;
                 }
 
                 group.AddParticipant(participant);         

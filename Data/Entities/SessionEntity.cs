@@ -92,6 +92,7 @@ namespace SessionApp.Data.Entities
         public int Order { get; set; } = 0;  
         public GroupEntity Group { get; set; } = null!;
         public bool AutoFill { get; set; } = false;
+        public string Commander { get; set; } = string.Empty;
     }
 
     public class ArchivedRoundEntity

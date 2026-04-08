@@ -82,6 +82,7 @@ namespace SessionApp.Data
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.ParticipantId).IsRequired().HasMaxLength(100);
                 entity.Property(e => e.Name).HasMaxLength(200);
+                entity.Property(e => e.Commander).HasMaxLength(200).HasDefaultValue(string.Empty);
                 entity.HasOne(e => e.Group)
                     .WithMany(g => g.GroupParticipants)
                     .HasForeignKey(e => e.GroupId)
