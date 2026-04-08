@@ -513,7 +513,16 @@ namespace SessionApp.Services
                 var participantExists = session.Participants.ContainsKey(participantId);
                 if (participantExists && commander != string.Empty)
                 {
-                    session.Participants[participantId].Commander = commander;
+                    // Check if commanders can be changed after game start
+                    if (session.IsGameStarted && !session.Settings.AllowCommandersToBeChanged)
+                    {
+                        // Don't allow commander changes after game has started if setting is disabled
+                        // Skip the commander update but continue with other logic
+                    }
+                    else
+                    {
+                        session.Participants[participantId].Commander = commander;
+                    }
                 }
 
                 // For Win/Draw/DataOnly we require the participant to be in a group for the current round.
@@ -566,11 +575,20 @@ namespace SessionApp.Services
 
                 if (commander != string.Empty) // this is wrong but there is a logic error where if the player order is updated but commander is not included in the request, the commander gets wiped out. need to find a better way to handle commander updates that doesn't rely on the client including it in every request
                 {
-                    //Update Commander for this round.
-                    currentGroup.Participants[participantId].Commander = commander;
+                    // Check if commanders can be changed after game start
+                    if (session.IsGameStarted && !session.Settings.AllowCommandersToBeChanged)
+                    {
+                        // Don't allow commander changes for this round if setting is disabled
+                        // Skip the commander update but continue with other logic
+                    }
+                    else
+                    {
+                        //Update Commander for this round.
+                        currentGroup.Participants[participantId].Commander = commander;
 
-                    // Check for missing commander keys in statistics for all participants in the group
-                    EnsureCommanderStatistics(currentGroup);
+                        // Check for missing commander keys in statistics for all participants in the group
+                        EnsureCommanderStatistics(currentGroup);
+                    }
                 }
 
                 // Handle DataOnly - just update statistics without changing result

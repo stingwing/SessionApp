@@ -41,7 +41,8 @@ namespace SessionApp.Helpers
                 settings.AllowPlayersToCreateCustomGroups,
                 settings.TournamentMode,
                 settings.MaxRounds,
-                settings.MaxGroupSize
+                settings.MaxGroupSize,
+                settings.AllowCommandersToBeChanged
             );
         }
 

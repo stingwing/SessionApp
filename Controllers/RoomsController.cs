@@ -169,6 +169,9 @@ namespace SessionApp.Controllers
                 session.CreatedAtUtc,
                 session.ExpiresAtUtc,
                 session.Participants.Count,
+                session.IsGameStarted,
+                session.IsGameEnded,
+                session.Archived,
                 participants,
                 session.Settings.ToRoomSettingsResponse()
             ));
@@ -208,8 +211,8 @@ namespace SessionApp.Controllers
             if (session.IsGameEnded || session.IsExpiredUtc())
                 return NotFound(new { message = "Game has ended" });
 
-            if (session.IsGameStarted)
-                return NotFound(new { message = "You can't change settings after starting the game" });
+            //if (session.IsGameStarted)
+            //    return NotFound(new { message = "You can't change settings after starting the game" });
 
             lock (session)
             {
@@ -235,6 +238,7 @@ namespace SessionApp.Controllers
                 session.Settings.TournamentMode = request.TournamentMode;
                 session.Settings.MaxRounds = request.MaxRounds;
                 session.Settings.MaxGroupSize = request.MaxGroupSize;
+                session.Settings.AllowCommandersToBeChanged = request.AllowCommandersToBeChanged;
             }
 
             // Save settings to database
@@ -903,7 +907,8 @@ public async Task<IActionResult> DeleteSession(
         bool AllowPlayersToCreateCustomGroups,
         bool TournamentMode,
         int MaxRounds,
-        int MaxGroupSize);
+        int MaxGroupSize,
+        bool AllowCommandersToBeChanged);
 
     public record MemberResponse(
         string Id,
@@ -926,8 +931,12 @@ public async Task<IActionResult> DeleteSession(
         DateTime CreatedAtUtc,
         DateTime ExpiresAtUtc,
         int ParticipantCount,
+        bool IsGameStarted,
+        bool IsGameEnded,
+        bool Archived,
         MemberResponse[] Participants,
         RoomSettingsResponse Settings
+
     );
 
     public record UpdateRoomSettingsRequest(
@@ -955,6 +964,7 @@ public async Task<IActionResult> DeleteSession(
         bool AllowPlayersToCreateCustomGroups = false,
         bool TournamentMode = false,
         int MaxRounds = 10000,
+        bool AllowCommandersToBeChanged = true,
 
         // Optional: UserId if the host has a registered account
         Guid? UserId = null

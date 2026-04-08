@@ -99,6 +99,7 @@ namespace SessionApp.Models
         public bool TournamentMode { get; set; } = false;
         public int MaxRounds { get; set; } = 10000;
         public int MaxGroupSize { get; set; } = 4;
+        public bool AllowCommandersToBeChanged { get; set; } = true;
     }
 
     public class Participant
