@@ -588,8 +588,6 @@ namespace SessionApp.Controllers
             // This enables tracking of match results, win rates, and player statistics
 
             var normalized = InputSanitizer.SanitizeString(request.Result).ToLowerInvariant();
-            if (normalized != "win" && normalized != "draw" && normalized != "drop" && normalized != "data")
-                return BadRequest(new { message = "result must be one of: win, draw, drop, data" });
 
             var outcome = normalized switch
             {
@@ -599,14 +597,17 @@ namespace SessionApp.Controllers
                 "data" => ReportOutcomeType.DataOnly,
                 "commander" => ReportOutcomeType.Commander,
                 "order" => ReportOutcomeType.PlayerOrder,
-                _ => ReportOutcomeType.DataOnly
+                _ => ReportOutcomeType.Fail,
             };
+
+            if (outcome == ReportOutcomeType.Fail)
+                return StatusCode(500, new { message = "Invalid Input" });
 
             var session = await _roomService.GetSessionAsync(sanitizedCode);
             if (session is null)
                 return NotFound(new { message = "Room not found" });
 
-            var serviceResult = _roomService.ReportOutcome(session, sanitizedCode, sanitizedParticipantId, outcome, sanitizedCommander, sanitizedStatistics, out var winnerId, out var removedParticipant, out var groupIndex);
+             var serviceResult = _roomService.ReportOutcome(session, sanitizedCode, sanitizedParticipantId, outcome, sanitizedCommander, sanitizedStatistics, out var winnerId, out var removedParticipant, out var groupIndex);
 
             return serviceResult switch
             {
@@ -618,6 +619,8 @@ namespace SessionApp.Controllers
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.Win => await HandleReportBroadcast(sanitizedCode, groupIndex, sanitizedParticipantId),
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.Draw => await HandleReportBroadcast(sanitizedCode, groupIndex, sanitizedParticipantId),
                 ReportOutcomeResult.Success when outcome == ReportOutcomeType.DataOnly => await HandleReportBroadcast(sanitizedCode, groupIndex, sanitizedParticipantId),
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.PlayerOrder => await HandleReportBroadcast(sanitizedCode, groupIndex, sanitizedParticipantId),
+                ReportOutcomeResult.Success when outcome == ReportOutcomeType.Commander => await HandleUpdateCommanderBroadcast(sanitizedCode, session, sanitizedParticipantId),
                 ReportOutcomeResult.RoundStarted => Ok(new { message = "The Round has already Started" }),
                 _ => StatusCode(500, new { message = "Unknown error reporting outcome" })
             };
@@ -662,7 +665,7 @@ namespace SessionApp.Controllers
             return Ok(payload);
         }
 
-        private async Task<IActionResult> HandleDropoutBroadcast(string code, Models.Participant? participant)
+        private async Task<IActionResult> HandleDropoutBroadcast(string code,Participant? participant)
         {
             if (participant is null)
                 return Ok(new { message = "Participant removed" });
@@ -675,6 +678,17 @@ namespace SessionApp.Controllers
             };
 
             await _hubContext.Clients.Group(code).SendAsync("ParticipantDroppedOut", payload);
+            return Ok(payload);
+        }
+
+        private async Task<IActionResult> HandleUpdateCommanderBroadcast(string code, RoomSession session, string sanitizedParticipantId)
+        {
+            var payload = new
+            {
+                RoomCode = code,
+            };
+
+            await _hubContext.Clients.Group(code).SendAsync("CommanderUpdated", payload);
             return Ok(payload);
         }
 
@@ -878,7 +892,7 @@ public async Task<IActionResult> DeleteSession(
         string ParticipantId,
 
         [Required(ErrorMessage = "Result is required")]
-        [RegularExpression("^(win|draw|drop|data)$", ErrorMessage = "Result must be one of: win, draw, drop, data")]
+        [RegularExpression("^(win|draw|drop|data|commander|order)$", ErrorMessage = "Result must be one of: win, draw, drop, data, commander")]
         string Result,
 
         [SafeString(MinLength = 0, MaxLength = 200)]

@@ -13,6 +13,7 @@ namespace SessionApp.Data
         public DbSet<ArchivedRoundEntity> ArchivedRounds { get; set; }
         public DbSet<CommanderEntity> Commanders { get; set; }
         public DbSet<UserEntity> Users { get; set; }
+        public DbSet<FeedbackEntity> Feedbacks { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -124,6 +125,26 @@ namespace SessionApp.Data
                 entity.Property(e => e.EmailConfirmed).HasDefaultValue(false);
                 entity.HasIndex(e => e.Username).IsUnique();
                 entity.HasIndex(e => e.Email).IsUnique();
+            });
+
+            modelBuilder.Entity<FeedbackEntity>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Email).HasMaxLength(256);
+                entity.Property(e => e.Subject).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.Message).IsRequired().HasMaxLength(5000);
+                entity.Property(e => e.Category).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.Status).IsRequired().HasMaxLength(50).HasDefaultValue("New");
+                entity.Property(e => e.AdminNotes).HasMaxLength(2000);
+                entity.Property(e => e.Response).HasMaxLength(2000);
+                entity.HasOne(e => e.User)
+                    .WithMany()
+                    .HasForeignKey(e => e.UserId)
+                    .OnDelete(DeleteBehavior.SetNull);
+                entity.HasIndex(e => e.UserId);
+                entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => e.Category);
+                entity.HasIndex(e => e.CreatedAtUtc);
             });
         }
     }

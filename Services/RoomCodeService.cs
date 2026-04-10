@@ -337,12 +337,6 @@ namespace SessionApp.Services
                     // Check if we're starting a new round (not just regenerating the current one)
                     if (task == HandleRoundOptions.GenerateRound || task == HandleRoundOptions.EndRound || task == HandleRoundOptions.EndGame)
                     {
-                        foreach (var group in session.Groups)
-                        {
-                            // Check for missing commander keys in statistics for all participants in the group
-                            EnsureCommanderStatistics(group);
-                        }
-
                         var snapshotGroups = SnapshotGroups(session.Groups);
                         session.ArchivedRounds.Add(snapshotGroups);                   
                     }
@@ -432,6 +426,7 @@ namespace SessionApp.Services
             DataOnly, // Add this new type for statistics-only updates
             Commander,
             PlayerOrder,
+            Fail,
         }
 
         public enum HandleRoundOptions
@@ -463,7 +458,8 @@ namespace SessionApp.Services
             AlreadyEnded, // group already has a result
             ParticipantNotFound,
             Invalid,
-            RoundStarted
+            RoundStarted,
+            SettingError
         }
 
         /// <summary>
@@ -486,60 +482,242 @@ namespace SessionApp.Services
             if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(participantId))
                 return ReportOutcomeResult.Invalid;
 
+            // Route to specific handlers based on outcome type
+            if (outcome == ReportOutcomeType.DropOut)
+            {
+                return HandleDropOut(session, participantId, out removedParticipant);
+            }
+            else if (outcome == ReportOutcomeType.Commander)
+            {
+                return UpdateCommander(session, participantId, commander);
+            }
+            else if (outcome == ReportOutcomeType.PlayerOrder)
+            {
+                return UpdatePlayerOrder(session, code, participantId, outcome, statistics, out groupIndex);
+            }
+            else if (outcome == ReportOutcomeType.DataOnly)
+            {
+                UpdatePlayerOrder(session, code, participantId, outcome, statistics, out groupIndex);
+                return HandleDataOnly(session, participantId, commander, statistics, out groupIndex);
+            }
+            else if (outcome == ReportOutcomeType.Win)
+            {
+                return HandleWin(session, participantId, commander, statistics, out winnerParticipantId, out groupIndex);
+            }
+            else if (outcome == ReportOutcomeType.Draw)
+            {
+                return HandleDraw(session, participantId, commander, statistics, out groupIndex);
+            }
+
+            return ReportOutcomeResult.Invalid;
+        }
+
+        private ReportOutcomeResult HandleDropOut(RoomSession session, string participantId, out Participant? removedParticipant)
+        {
+            removedParticipant = null;
 
             lock (session)
             {
-                // Handle DropOut (remove from active participants)
-                if (outcome == ReportOutcomeType.DropOut)
-                {
-                    if (session.HasAnyRoundStarted())
-                        return ReportOutcomeResult.RoundStarted;
+                if (session.HasAnyRoundStarted())
+                    return ReportOutcomeResult.RoundStarted;
 
-                    var participant = session.Participants.Values.FirstOrDefault(x => x.Id == participantId);
+                var participant = session.Participants.Values.FirstOrDefault(x => x.Id == participantId);
 
-                    if (participant is null)             
-                        return ReportOutcomeResult.ParticipantNotFound;
-                                                 
-                    participant.Dropped = !participant.Dropped;
-                    SaveSessionToDatabaseFireAndForget(session);
-                    removedParticipant = participant;
-                    return ReportOutcomeResult.Success;
-                }
+                if (participant is null)
+                    return ReportOutcomeResult.ParticipantNotFound;
 
+                participant.Dropped = !participant.Dropped;
+                removedParticipant = participant;
+            }
+
+            SaveSessionToDatabaseFireAndForget(session);
+            return ReportOutcomeResult.Success;
+        }
+
+        private ReportOutcomeResult HandleDataOnly(RoomSession session, string participantId, string commander, Dictionary<string, object> statistics, out int? groupIndex)
+        {
+            groupIndex = null;
+
+            if (session.Groups == null)
+                return ReportOutcomeResult.Invalid;
+
+            lock (session)
+            {
+                // Update commander for future rounds
+                UpdateCommanderForParticipant(session, participantId, commander);
+
+                // Find participant's current group
+                var currentGroup = session.Groups.FirstOrDefault(g => g.Participants.ContainsKey(participantId));
+                if (currentGroup is null)
+                    return ReportOutcomeResult.ParticipantNotFound;
+
+                if (currentGroup.CompletedAtUtc == null)
+                    currentGroup.CompletedAtUtc = DateTime.UtcNow;
+
+                groupIndex = currentGroup.GroupNumber;
+                if (groupIndex < 0)
+                    groupIndex = null;
+
+                // Merge provided statistics
+                MergeStatistics(currentGroup, statistics);
+
+                // Update commander for this round
+                UpdateCommanderForGroup(session, currentGroup, participantId, commander);
+            }
+
+            SaveSessionToDatabaseFireAndForget(session);
+            return ReportOutcomeResult.Success;
+        }
+
+        private ReportOutcomeResult HandleWin(RoomSession session, string participantId, string commander, Dictionary<string, object> statistics, out string? winnerParticipantId, out int? groupIndex)
+        {
+            winnerParticipantId = null;
+            groupIndex = null;
+
+            if (session.Groups == null)
+                return ReportOutcomeResult.Invalid;
+
+            lock (session)
+            {
+                // Find participant's current group
+                var currentGroup = session.Groups.FirstOrDefault(g => g.Participants.ContainsKey(participantId));
+                if (currentGroup is null)
+                    return ReportOutcomeResult.ParticipantNotFound;
+
+                if (currentGroup.CompletedAtUtc == null)
+                    currentGroup.CompletedAtUtc = DateTime.UtcNow;
+
+                groupIndex = currentGroup.GroupNumber;
+                if (groupIndex < 0)
+                    groupIndex = null;
+
+                // Check if group already has a result
+                if (currentGroup.HasResult)
+                    return ReportOutcomeResult.AlreadyEnded;
+
+                // Verify participant still present
+                if (!session.Participants.ContainsKey(participantId))
+                    return ReportOutcomeResult.ParticipantNotFound;
+
+                // Merge provided statistics
+                MergeStatistics(currentGroup, statistics);
+
+                // Update commander for this round
+                UpdateCommanderForGroup(session, currentGroup, participantId, commander);
+
+                // Store completion timestamp
+                currentGroup.CompletedAtUtc = DateTime.UtcNow;
+
+                // Mark winner
+                currentGroup.WinnerParticipantId = participantId;
+                currentGroup.IsDraw = false;
+                winnerParticipantId = participantId;
+            }
+
+            SaveSessionToDatabaseFireAndForget(session);
+            GameEnded?.Invoke(session, ReportOutcomeType.Win, participantId);
+            return ReportOutcomeResult.Success;
+        }
+
+        private ReportOutcomeResult HandleDraw(RoomSession session, string participantId, string commander, Dictionary<string, object> statistics, out int? groupIndex)
+        {
+            groupIndex = null;
+
+            lock (session)
+            {
                 if (session.Groups == null)
                     return ReportOutcomeResult.Invalid;
 
-                //Update commander going forward
-                var participantExists = session.Participants.ContainsKey(participantId);
-                if (participantExists && commander != string.Empty)
-                {
-                    // Check if commanders can be changed after game start
-                    if (session.IsGameStarted && !session.Settings.AllowCommandersToBeChanged)
-                    {
-                        // Don't allow commander changes after game has started if setting is disabled
-                        // Skip the commander update but continue with other logic
-                    }
-                    else
-                    {
-                        session.Participants[participantId].Commander = commander;
-                    }
-                }
+                // Update commander for future rounds
+               // UpdateCommanderForParticipant(session, participantId, commander);
 
+                // Find participant's current group
+                var currentGroup = session.Groups.FirstOrDefault(g => g.Participants.ContainsKey(participantId));
+                if (currentGroup is null)
+                    return ReportOutcomeResult.ParticipantNotFound;
+
+                if (currentGroup.CompletedAtUtc == null)
+                    currentGroup.CompletedAtUtc = DateTime.UtcNow;
+
+                groupIndex = currentGroup.GroupNumber;
+                if (groupIndex < 0)
+                    groupIndex = null;
+
+                // Check if group already has a result
+                if (currentGroup.HasResult)
+                    return ReportOutcomeResult.AlreadyEnded;
+
+                // Merge provided statistics
+                MergeStatistics(currentGroup, statistics);
+
+                // Update commander for this round
+                UpdateCommanderForGroup(session, currentGroup, participantId, commander);
+
+                // Store completion timestamp
+                currentGroup.CompletedAtUtc = DateTime.UtcNow;
+
+                // Mark as draw
+                currentGroup.IsDraw = true;
+                currentGroup.WinnerParticipantId = null;
+
+                SaveSessionToDatabaseFireAndForget(session);
+                GameEnded?.Invoke(session, ReportOutcomeType.Draw, null);
+                return ReportOutcomeResult.Success;
+            }
+        }
+
+        private void UpdateCommanderForParticipant(RoomSession session, string participantId, string commander)
+        {
+            if (session.Participants.ContainsKey(participantId) && commander != string.Empty && session.Settings.AllowCommandersToBeChanged)
+                session.Participants[participantId].Commander = commander;
+        }
+
+        private void UpdateCommanderForGroup(RoomSession session, Group currentGroup, string participantId, string commander)
+        {
+            if (commander != string.Empty && session.Settings.AllowCommandersToBeChanged)
+                currentGroup.Participants[participantId].Commander = commander;
+        }
+
+        private void MergeStatistics(Group currentGroup, Dictionary<string, object> statistics)
+        {
+            if (statistics == null)
+                return;
+
+            if (!statistics.Any())
+                return;
+
+            foreach (var stat in statistics)
+            {
+                if (stat.Key == "PlayerOrder")
+                    continue;
+
+                currentGroup.Statistics[stat.Key] = stat.Value;
+            }
+        }
+        
+        public ReportOutcomeResult UpdatePlayerOrder(RoomSession session, string code, string participantId, ReportOutcomeType outcome, Dictionary<string, object> statistics, out int? groupIndex)
+        {
+            groupIndex = null;
+
+            if (string.IsNullOrWhiteSpace(participantId))
+                return ReportOutcomeResult.Invalid;
+
+            if (session.Groups == null)
+                return ReportOutcomeResult.Invalid;
+
+            lock (session)
+            {
                 // For Win/Draw/DataOnly we require the participant to be in a group for the current round.
                 var currentGroup = session.Groups.FirstOrDefault(g => g.Participants.ContainsKey(participantId));
                 if (currentGroup is null)
                     return ReportOutcomeResult.ParticipantNotFound;
 
-                if(currentGroup.CompletedAtUtc == null)
+                if (currentGroup.CompletedAtUtc == null)
                     currentGroup.CompletedAtUtc = DateTime.UtcNow;
-                // Maintain existing external contract: groupIndex is zero-based index into session.Groups
+
                 groupIndex = currentGroup.GroupNumber;
                 if (groupIndex < 0)
                     groupIndex = null;
-
-                // For DataOnly, allow updates even if result exists
-                if (outcome != ReportOutcomeType.DataOnly && currentGroup.HasResult)
-                    return ReportOutcomeResult.AlreadyEnded;
 
                 // Merge provided statistics with existing ones
                 if (statistics != null && statistics.Count > 0)
@@ -568,91 +746,39 @@ namespace SessionApp.Services
                                 }
                             }
                         }
-
-                        currentGroup.Statistics[stat.Key] = stat.Value;
                     }
                 }
 
-                if (commander != string.Empty) // this is wrong but there is a logic error where if the player order is updated but commander is not included in the request, the commander gets wiped out. need to find a better way to handle commander updates that doesn't rely on the client including it in every request
-                {
-                    // Check if commanders can be changed after game start
-                    if (session.IsGameStarted && !session.Settings.AllowCommandersToBeChanged)
-                    {
-                        // Don't allow commander changes for this round if setting is disabled
-                        // Skip the commander update but continue with other logic
-                    }
-                    else
-                    {
-                        //Update Commander for this round.
-                        currentGroup.Participants[participantId].Commander = commander;
-
-                        // Check for missing commander keys in statistics for all participants in the group
-                        EnsureCommanderStatistics(currentGroup);
-                    }
-                }
-
-                // Handle DataOnly - just update statistics without changing result
-                if (outcome == ReportOutcomeType.DataOnly || outcome == ReportOutcomeType.Commander || outcome == ReportOutcomeType.PlayerOrder)
-                {
-                    // Save to database (fire and forget)
-                    SaveSessionToDatabaseFireAndForget(session);
-                    return ReportOutcomeResult.Success;
-                }
-
-                // Store completion timestamp for Win/Draw
-                currentGroup.CompletedAtUtc = DateTime.UtcNow;
-
-                if (outcome == ReportOutcomeType.Win)
-                {
-                    // verify participant still present
-                    if (!session.Participants.ContainsKey(participantId))
-                        return ReportOutcomeResult.ParticipantNotFound;
-
-                    currentGroup.WinnerParticipantId = participantId;
-                    currentGroup.IsDraw = false;
-                    winnerParticipantId = participantId;
-
-                    // Save to database (fire and forget)
-                    SaveSessionToDatabaseFireAndForget(session);
-
-                    // Notify subscribers
-                    GameEnded?.Invoke(session, outcome, participantId);
-                    return ReportOutcomeResult.Success;
-                }
-
-                if (outcome == ReportOutcomeType.Draw)
-                {
-                    currentGroup.IsDraw = true;
-                    currentGroup.WinnerParticipantId = null;
-
-                    // Save to database (fire and forget)
-                    SaveSessionToDatabaseFireAndForget(session);
-
-                    GameEnded?.Invoke(session, outcome, null);
-                    return ReportOutcomeResult.Success;
-                }
-
-                return ReportOutcomeResult.Invalid;
+                // Save to database (fire and forget)
+                SaveSessionToDatabaseFireAndForget(session);
+                return ReportOutcomeResult.Success;
             }
         }
 
-        /// <summary>
-        /// Ensures all participants' commanders are stored in the group statistics with the key pattern {participantId}_Commander.
-        /// Only adds missing keys where the participant has a non-empty commander.
-        /// </summary>
-        private void EnsureCommanderStatistics(Group group)
+        public ReportOutcomeResult UpdateCommander(RoomSession session, string participantId, string commander) // concider adding a setting that locks the commander 
         {
-            foreach (var participant in group.Participants.Values)
-            {
-                if (string.IsNullOrWhiteSpace(participant.Commander))
-                    continue;
+            if (string.IsNullOrWhiteSpace(participantId))
+                return ReportOutcomeResult.Invalid;
 
-                var commanderKey = $"{participant.Id}_Commander";
-                if (!group.Statistics.ContainsKey(commanderKey))
+            if (!session.Settings.AllowCommandersToBeChanged)
+                return ReportOutcomeResult.SettingError; // change the erorr
+
+            lock (session)
+            {
+                // Update commander for future rounds
+                UpdateCommanderForParticipant(session, participantId, commander);
+
+                if (session.Groups != null)
                 {
-                    group.Statistics[commanderKey] = participant.Commander;
+                    var currentGroup = session.Groups.FirstOrDefault(g => g.Participants.ContainsKey(participantId));
+                    if (currentGroup != null)
+                        UpdateCommanderForGroup(session, currentGroup, participantId, commander);
                 }
             }
+
+            // Save to database (fire and forget)
+            SaveSessionToDatabaseFireAndForget(session);
+            return ReportOutcomeResult.Success;
         }
 
         /// <summary>
